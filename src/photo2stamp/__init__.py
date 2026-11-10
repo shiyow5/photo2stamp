@@ -3,4 +3,4 @@
 from .pipeline import StampConfig, StampResult, stylize
 
 __all__ = ["StampConfig", "StampResult", "stylize"]
-__version__ = "1.0.0"
+__version__ = "1.1.0"
