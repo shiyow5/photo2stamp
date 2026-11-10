@@ -35,6 +35,12 @@ LIGHT_INK = "#F3DFA2"  # night mode: lamp-colored outlines on dark fills
 NIGHT_LUMA = 45  # photos with a median luma below this are drawn in night mode
 NIGHT_L_RANGE = (10.0, 62.0)  # night mode keeps fills dark
 NIGHT_MODES = ("auto", "on", "off")
+NIGHT_BRIGHT_LUMA = 120  # pixels brighter than this are lit (windows, lamps, a lit dish)
+NIGHT_MAX_BLOB = 0.05  # night: no lit area covers more than this fraction (measured 0.005 vs 0.13)
+DUSK_LAMP_LUMA = 200  # day mode: point lights this bright in dark parts become lamp dots
+DUSK_LAMP_AREA = 0.002  # ... when each is smaller than this fraction of the frame
+DUSK_DARK_LUMA = 70  # ... and the photo around them (blurred) is darker than this
+DUSK_SURROUND_SIGMA = 10.0  # blur (px at LINE_SIZE) that measures the surroundings of a light
 LINE_SIZE = 600  # long side of the image the outlines are detected on
 SMOOTHERS = ("l0", "meanshift")
 CROPS = ("before", "after")  # circle/rounded: crop the photo first, or cut the finished art
@@ -203,9 +209,15 @@ def _smooth(small: np.ndarray, cfg: StampConfig) -> np.ndarray:
 
 
 def is_night(image: np.ndarray) -> bool:
-    """A photo is a night shot when most of it is dark (median luma below NIGHT_LUMA)."""
-    gray = cv2.cvtColor(image[..., :3], cv2.COLOR_BGR2GRAY)
-    return float(np.median(gray)) < NIGHT_LUMA
+    """A photo is a night shot when most of it is dark (median luma below NIGHT_LUMA) and
+    its light comes from small scattered points (windows, lamps). A dish on a black
+    table is also mostly dark, but its bright part is one large area."""
+    gray = cv2.cvtColor(resize_long_side(image[..., :3], 400), cv2.COLOR_BGR2GRAY)
+    if float(np.median(gray)) >= NIGHT_LUMA:
+        return False
+    count, _, stats, _ = cv2.connectedComponentsWithStats((gray > NIGHT_BRIGHT_LUMA).astype(np.uint8))
+    largest = stats[1:, cv2.CC_STAT_AREA].max() / gray.size if count > 1 else 0.0
+    return largest < NIGHT_MAX_BLOB
 
 
 def _segment(
@@ -292,7 +304,12 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
         mask = _outline_mask(img, (h, w), cfg)
         ink, on = (hex_to_bgr(LIGHT_INK), "dark") if night else (hex_to_bgr(INK), "light")
         overlay = lines_svg(flat, mask, ink, on)
+        lamps = _dusk_lamps(img, flat) if cfg.night == "auto" and not night else None
         flat = draw_lines(flat, mask, ink, on)
+        if lamps is not None and lamps.any():
+            # dusk: the dark half of the scene (a river, a street) still shows its lights
+            overlay += lines_svg(flat, lamps, hex_to_bgr(LIGHT_INK), "dark")
+            flat = draw_lines(flat, lamps, hex_to_bgr(LIGHT_INK), "dark")
     if cfg.shape == "rect":
         return StampResult(flat, shapes_to_svg(shapes, (h, w), overlay=overlay), labels, used)
 
@@ -315,6 +332,18 @@ def _overlaps(points: np.ndarray, x: int, y: int, side: int) -> bool:
     """Whether a polygon's bounding box touches the square window at (x, y)."""
     (x0, y0), (x1, y1) = points.min(axis=0), points.max(axis=0)
     return bool(x1 >= x and x0 < x + side and y1 >= y and y0 < y + side)
+
+
+def _dusk_lamps(img: np.ndarray, flat: np.ndarray) -> np.ndarray:
+    """Day mode: small bright points whose surroundings are dark in the photo (lamps
+    over a dusk river or street), drawn as lamp dots."""
+    h, w = flat.shape[:2]
+    line_img = resize_long_side(img, LINE_SIZE)
+    spots = light_spots(line_img, (h, w), min_luma=DUSK_LAMP_LUMA, max_area=DUSK_LAMP_AREA)
+    gray = cv2.cvtColor(line_img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    around = cv2.GaussianBlur(gray, (0, 0), DUSK_SURROUND_SIGMA * max(gray.shape) / LINE_SIZE)
+    dark = cv2.resize(around, (w, h), interpolation=cv2.INTER_LINEAR) < DUSK_DARK_LUMA
+    return spots & dark
 
 
 def _stretch_contrast(image: np.ndarray, low: float = 2, high: float = 98) -> np.ndarray:
