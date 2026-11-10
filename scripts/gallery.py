@@ -34,7 +34,11 @@ def _pair(path: Path, config: StampConfig) -> np.ndarray | None:
         print(f"skip: cannot read {path}", file=sys.stderr)
         return None
     gap = np.full((BOX_H, GAP, 3), 255, np.uint8)
-    return np.hstack([_fit(image), gap, _fit(stylize(image, config).image)])
+    art = stylize(image, config).image
+    if art.shape[2] == 4:  # composite transparent stamps onto white
+        alpha = art[..., 3:].astype(np.float32) / 255
+        art = (art[..., :3] * alpha + 255 * (1 - alpha)).astype(np.uint8)
+    return np.hstack([_fit(image), gap, _fit(art)])
 
 
 def main() -> int:
@@ -42,9 +46,12 @@ def main() -> int:
     p.add_argument("inputs", nargs="+", type=Path)
     p.add_argument("-o", "--output", type=Path, default=Path("gallery.jpg"))
     p.add_argument("--columns", type=int, default=2)
+    p.add_argument("--shape", default="rect")
+    p.add_argument("--palette", default="teal")
     args = p.parse_args()
 
-    pairs = [t for t in (_pair(path, StampConfig()) for path in args.inputs) if t is not None]
+    config = StampConfig(shape=args.shape, palette=args.palette)
+    pairs = [t for t in (_pair(path, config) for path in args.inputs) if t is not None]
     if not pairs:
         return 1
     blank = np.full_like(pairs[0], 255)

@@ -19,12 +19,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("inputs", nargs="+", type=Path, help="input image files")
     p.add_argument("-o", "--out-dir", type=Path, default=Path("out"), help="output directory (default: out)")
     p.add_argument("--palette", default=d.palette, choices=[*PRESETS, ORIGINAL])
-    p.add_argument("--colors", type=int, default=d.colors, help="color clusters (default: %(default)s)")
+    p.add_argument("--colors", type=int, default=d.colors, help="color clusters; 0 = auto from detail (default)")
     p.add_argument("--smooth", type=int, default=d.smooth, help="smoothing passes (default: %(default)s)")
     p.add_argument("--majority", type=int, default=d.majority, help="shape blockiness window px (default: %(default)s)")
     p.add_argument("--min-region", type=float, default=d.min_region, help="min region area fraction")
     p.add_argument("--simplify", type=float, default=d.simplify, help="polygon tolerance (fraction of diagonal)")
     p.add_argument("--snap-deg", type=float, default=d.snap_deg, help="snap near-vertical edges (0 = off)")
+    p.add_argument("--work-size", type=int, default=d.work_size,
+                   help="segmentation resolution (long side); 0 = auto from detail (default)")
+    p.add_argument("--ring", type=float, default=d.ring, help="stamp ring width (fraction of size)")
+    p.add_argument("--ring-gap", type=float, default=d.ring_gap, help="gap between ring and art")
     p.add_argument("--max-size", type=int, default=d.max_size, help="resize long side; 0 keeps size")
     p.add_argument("--accent-chroma", type=float, default=d.accent_chroma, help="saturation threshold for accents")
     p.add_argument("--no-sky", action="store_true", help="disable sky detection")
@@ -49,6 +53,9 @@ def _config(args: argparse.Namespace) -> StampConfig:
         min_region=args.min_region,
         simplify=args.simplify,
         snap_deg=args.snap_deg,
+        work_size=args.work_size,
+        ring=args.ring,
+        ring_gap=args.ring_gap,
         palette=args.palette,
         detect_sky=not args.no_sky,
         detect_far=not args.no_far,

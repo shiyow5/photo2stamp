@@ -9,7 +9,7 @@ import numpy as np
 
 from .palette import bgr_to_hex
 
-SHAPES = ("rect", "circle")
+SHAPES = ("rect", "circle", "rounded")
 
 
 @dataclass(frozen=True)
@@ -87,23 +87,110 @@ def render_png(
     return cv2.resize(canvas, (w, h), interpolation=cv2.INTER_AREA)
 
 
-def shapes_to_svg(shapes: list[Shape], size: tuple[int, int], shape: str = "rect") -> str:
-    """Serialize shapes as an SVG document (one <path> per region)."""
+def _svg_outline(shape: str, w: int, h: int, inset: float, attrs: str) -> str:
+    """SVG element for the stamp outline shrunk by `inset` px."""
+    s = min(w, h)
+    if shape == "circle":
+        return f'<circle cx="{w / 2:g}" cy="{h / 2:g}" r="{s / 2 - inset:g}" {attrs}/>'
+    x, y, side = (w - s) / 2 + inset, (h - s) / 2 + inset, s - 2 * inset
+    rx = max(0.0, ROUNDED_RADIUS * s - inset)
+    return f'<rect x="{x:g}" y="{y:g}" width="{side:g}" height="{side:g}" rx="{rx:g}" {attrs}/>'
+
+
+def shapes_to_svg(
+    shapes: list[Shape],
+    size: tuple[int, int],
+    shape: str = "rect",
+    ring_color: tuple[int, int, int] | None = None,
+    ring: float = 0.0,
+    gap: float = 0.0,
+    paper: tuple[int, int, int] = (255, 255, 255),
+) -> str:
+    """Serialize shapes as an SVG document (one <path> per region), with an optional stamp frame.
+
+    `ring` and `gap` are fractions of the stamp size, as in frame_stamp.
+    """
     h, w = size[:2]
     bg = bgr_to_hex(_background(shapes))
     head = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}">']
     clip = ""
-    if shape == "circle":
-        r = min(w, h) / 2
-        head.append(f'<defs><clipPath id="stamp"><circle cx="{w / 2}" cy="{h / 2}" r="{r}"/></clipPath></defs>')
+    if shape != "rect":
+        head.append(f'<defs><clipPath id="stamp">{_svg_outline(shape, w, h, 0, "")}</clipPath></defs>')
         clip = ' clip-path="url(#stamp)"'
     body = [f"<g{clip}>", f'<rect width="{w}" height="{h}" fill="{bg}"/>']
     for s in shapes:
         d = "M" + " L".join(f"{x + 0.5:g} {y + 0.5:g}" for x, y in s.points) + " Z"
         c = bgr_to_hex(s.color)
         body.append(f'<path d="{d}" fill="{c}" stroke="{c}" stroke-width="1" stroke-linejoin="round"/>')
-    body.append("</g></svg>")
+    body.append("</g>")
+    if shape != "rect" and ring_color is not None and ring > 0:
+        side = min(w, h)
+        r_px, g_px = ring * side, gap * side
+        if g_px > 0:
+            attrs = f'fill="none" stroke="{bgr_to_hex(paper)}" stroke-width="{g_px:g}"'
+            body.append(_svg_outline(shape, w, h, r_px + g_px / 2, attrs))
+        attrs = f'fill="none" stroke="{bgr_to_hex(ring_color)}" stroke-width="{r_px:g}"'
+        body.append(_svg_outline(shape, w, h, r_px / 2, attrs))
+    body.append("</svg>")
     return "\n".join(head + body) + "\n"
+
+
+ROUNDED_RADIUS = 0.18  # corner radius of the "rounded" stamp, as a fraction of its size
+_SS = 4  # supersampling factor for anti-aliased frame masks
+_SS_MAX_PIXELS = 16_000_000  # cap on the supersampled mask size (memory)
+
+
+def _coverage(h: int, w: int, shape: str, inset: float) -> np.ndarray:
+    """Anti-aliased coverage (0..1) of the stamp outline shrunk by `inset` px."""
+    k = max(1, min(_SS, int((_SS_MAX_PIXELS / max(1, h * w)) ** 0.5)))
+    H, W = h * k, w * k
+    s = min(w, h)
+    mask = np.zeros((H, W), np.uint8)
+    if shape == "rect":
+        mask[:] = 1
+    elif shape == "circle":
+        r = int(round((s / 2 - inset) * k))
+        if r > 0:
+            cv2.circle(mask, (W // 2, H // 2), r, 1, thickness=-1)
+    else:
+        x0, y0 = int(round(((w - s) / 2 + inset) * k)), int(round(((h - s) / 2 + inset) * k))
+        x1, y1 = W - x0 - 1, H - y0 - 1
+        r = int(round(max(0.0, ROUNDED_RADIUS * s - inset) * k))
+        if x1 > x0 and y1 > y0:
+            cv2.rectangle(mask, (x0 + r, y0), (x1 - r, y1), 1, -1)
+            cv2.rectangle(mask, (x0, y0 + r), (x1, y1 - r), 1, -1)
+            for cx, cy in ((x0 + r, y0 + r), (x1 - r, y0 + r), (x0 + r, y1 - r), (x1 - r, y1 - r)):
+                cv2.circle(mask, (cx, cy), r, 1, -1)
+    return cv2.resize(mask.astype(np.float32), (w, h), interpolation=cv2.INTER_AREA)
+
+
+def frame_stamp(
+    image: np.ndarray,
+    shape: str,
+    ring_color: tuple[int, int, int],
+    ring: float = 0.035,
+    gap: float = 0.02,
+    paper: tuple[int, int, int] = (255, 255, 255),
+) -> np.ndarray:
+    """Cut the art into a stamp shape with a solid ring and a paper-colored gap.
+
+    ring / gap are fractions of the stamp size (the shorter image side).
+    Returns a new BGRA image; outside the stamp is transparent.
+    """
+    if shape not in SHAPES:
+        raise ValueError(f"unknown shape {shape!r} (choose from: {', '.join(SHAPES)})")
+    h, w = image.shape[:2]
+    s = min(h, w)
+    outer = _coverage(h, w, shape, 0)
+    inner = _coverage(h, w, shape, ring * s)
+    art = _coverage(h, w, shape, (ring + gap) * s)
+    rgb = image[..., :3].astype(np.float32)
+    weights = (art, inner - art, outer - inner)
+    layers = (rgb, np.array(paper, np.float32), np.array(ring_color, np.float32))
+    color = sum(wgt[..., None] * layer for wgt, layer in zip(weights, layers))
+    color = color / np.maximum(outer, 1e-6)[..., None]
+    alpha = np.round(outer * 255).astype(np.uint8)
+    return np.dstack([np.clip(np.round(color), 0, 255).astype(np.uint8), alpha])
 
 
 def apply_shape_mask(image: np.ndarray, shape: str) -> np.ndarray:
@@ -111,8 +198,5 @@ def apply_shape_mask(image: np.ndarray, shape: str) -> np.ndarray:
     if shape not in SHAPES:
         raise ValueError(f"unknown shape {shape!r} (choose from: {', '.join(SHAPES)})")
     h, w = image.shape[:2]
-    alpha = np.full((h, w), 255, np.uint8)
-    if shape == "circle":
-        alpha[:] = 0
-        cv2.circle(alpha, (w // 2, h // 2), min(w, h) // 2, 255, thickness=-1, lineType=cv2.LINE_AA)
+    alpha = np.round(_coverage(h, w, shape, 0) * 255).astype(np.uint8)
     return np.dstack([image[..., :3], alpha])

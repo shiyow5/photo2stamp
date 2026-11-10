@@ -19,6 +19,48 @@ def smooth(image: np.ndarray, strength: int = 2) -> np.ndarray:
     return cv2.pyrMeanShiftFiltering(out, sp=6 + 4 * strength, sr=18 + 6 * strength)
 
 
+def _edges(image: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(image[..., :3], cv2.COLOR_BGR2GRAY)
+    return (cv2.Canny(gray, 60, 150) > 0).astype(np.float32)
+
+
+def edge_density(image: np.ndarray, size: int = 400) -> float:
+    """Fraction of edge pixels at a fixed scale: a cheap 'how detailed is this photo'."""
+    h, w = image.shape[:2]
+    s = min(1.0, size / max(h, w))
+    small = cv2.resize(image, (max(1, round(w * s)), max(1, round(h * s))), interpolation=cv2.INTER_AREA)
+    return float(_edges(small).mean())
+
+
+def texture_map(image: np.ndarray, window: float = 0.03) -> np.ndarray:
+    """Local edge density in [0, 1]; low values mean smooth areas such as the sky."""
+    h, w = image.shape[:2]
+    k = max(3, int(round(max(h, w) * window)) | 1)
+    return np.clip(cv2.blur(_edges(image), (k, k)), 0.0, 1.0)
+
+
+def upscale_labels(labels: np.ndarray, size: tuple[int, int], n_labels: int) -> np.ndarray:
+    """Enlarge a label map with smooth, curved boundaries instead of nearest-neighbour stairs.
+
+    Each label's mask is enlarged with linear interpolation and blurred; every pixel then
+    takes the label with the highest value.
+    """
+    h, w = size[:2]
+    sh, sw = labels.shape
+    sigma = max(0.5, 0.5 * max(h / sh, w / sw))
+    best = np.full((h, w), -1.0, np.float32)
+    out = np.zeros((h, w), np.int32)
+    for i in range(n_labels):
+        mask = (labels == i).astype(np.float32)
+        if not mask.any():
+            continue
+        big = cv2.GaussianBlur(cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR), (0, 0), sigma)
+        higher = big > best
+        best[higher] = big[higher]
+        out[higher] = i
+    return out
+
+
 def to_lab(image: np.ndarray) -> np.ndarray:
     """uint8 BGR image -> float32 Lab (L in 0..100)."""
     return cv2.cvtColor(image.astype(np.float32) / 255.0, cv2.COLOR_BGR2Lab)
@@ -30,12 +72,14 @@ def quantize(image: np.ndarray, k: int, seed: int = 0) -> tuple[np.ndarray, np.n
     rng = np.random.default_rng(seed)
     n = lab.shape[0]
     k = max(1, min(k, n))  # k-means needs at least k samples
+    if n < 2 or k == 1:  # cv2.kmeans returns malformed centers for a single sample
+        return np.zeros(image.shape[:2], np.int32), lab.mean(axis=0, keepdims=True).astype(np.float32)
     sample = lab[rng.choice(n, size=min(n, _KMEANS_SAMPLE), replace=False)]
 
     cv2.setRNGSeed(seed)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.1)
     _, _, centers = cv2.kmeans(sample, k, None, criteria, 4, cv2.KMEANS_PP_CENTERS)
-    centers = centers.astype(np.float32)
+    centers = centers.astype(np.float32).reshape(-1, 3)
 
     # one cluster at a time keeps memory at O(N) instead of O(N*K*3)
     best = np.full(n, np.inf, np.float32)
@@ -173,30 +217,59 @@ def extract_sky(
     min_lightness: float = 50.0,
     max_yellow: float = 12.0,
     min_fraction: float = 0.005,
+    texture: np.ndarray | None = None,
+    max_texture: float = 0.05,
+    lab: np.ndarray | None = None,
+    max_sky_delta: float = 18.0,
 ) -> tuple[np.ndarray, np.ndarray, int | None]:
-    """Detect bright, non-warm regions touching the top edge and relabel them as sky.
+    """Detect the sky: regions touching the top edge, relabelled as one sky label.
 
+    With a `texture` map (see texture_map) a region is sky when it is smooth, whatever
+    its color, so sunset, overcast and night skies are found too. Without it the old
+    color rule is used: bright and not warm.
     Returns (new_labels, new_centers, sky_label). sky_label is None if nothing was found,
     in which case copies of the inputs are returned.
     """
     h, w = labels.shape
     sky = np.zeros(labels.shape, bool)
     used: list[int] = []
-    for lab in np.unique(labels[0]):
-        L, _, b = centers[lab]
-        if L < min_lightness or b > max_yellow:
+    for lbl in np.unique(labels[0]):
+        L, _, b = centers[lbl]
+        if texture is None and (L < min_lightness or b > max_yellow):
             continue
-        mask = (labels == lab).astype(np.uint8)
+        mask = (labels == lbl).astype(np.uint8)
         _, comp, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4)
         top_ids = np.unique(comp[0][comp[0] > 0])
-        keep = [i for i in top_ids if stats[i, cv2.CC_STAT_AREA] >= min_fraction * h * w]
+        keep = [
+            i
+            for i in top_ids
+            if stats[i, cv2.CC_STAT_AREA] >= min_fraction * h * w
+            and (texture is None or float(texture[comp == i].mean()) <= max_texture)
+        ]
         if keep:
             sky |= np.isin(comp, keep)
-            used.append(int(lab))
+            used.append(int(lbl))
 
     if not used:
         return labels.copy(), centers.copy(), None
     sky_label = centers.shape[0]
     new_labels = np.where(sky, sky_label, labels).astype(np.int32)
     new_centers = np.vstack([centers, centers[used].mean(axis=0, keepdims=True)]).astype(np.float32)
+    if lab is not None:
+        new_labels, new_centers = _split_off_sky_outliers(new_labels, new_centers, sky_label, lab, max_sky_delta)
     return new_labels, new_centers, sky_label
+
+
+def _split_off_sky_outliers(
+    labels: np.ndarray, centers: np.ndarray, sky_label: int, lab: np.ndarray, max_delta: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Objects that share a cluster with the sky (a white tower against a grey sky) are
+    given back their own label, with their own mean color, instead of being painted as sky."""
+    sky = labels == sky_label
+    ref = np.median(lab[sky], axis=0)
+    off = (np.linalg.norm(lab - ref, axis=2) > max_delta) & sky
+    off = cv2.morphologyEx(off.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)).astype(bool)
+    if not off.any():
+        return labels, centers
+    new_labels = np.where(off, centers.shape[0], labels).astype(np.int32)
+    return new_labels, np.vstack([centers, lab[off].mean(axis=0, keepdims=True)]).astype(np.float32)
