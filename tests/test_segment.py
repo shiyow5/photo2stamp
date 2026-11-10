@@ -120,3 +120,96 @@ def test_extract_accents_bridges_text_holes():
     new_labels, new_centers = extract_accents(to_lab(img), labels, centers, chroma=35, min_area=300)
     assert new_centers.shape[0] == 2  # one accent cluster, not three fragments
     assert new_labels[50, 50] == 1  # text stroke inside the sign is filled
+
+
+def test_extract_far_marks_hazy_region_touching_sky():
+    from photo2stamp.segment import extract_far
+
+    labels = np.zeros((100, 100), np.int32)  # 0 = sky
+    labels[40:60, :] = 1  # hazy skyline right under the sky
+    labels[60:, :] = 2  # dark foreground
+    centers = np.array([[80, -5, -15], [76, -3, -8], [25, 0, 0]], np.float32)
+    new_labels, new_centers, far = extract_far(labels, centers, sky_label=0)
+    assert far == 3
+    assert new_labels[50, 50] == far
+    assert new_labels[80, 50] == 2
+    assert new_centers.shape[0] == 4
+
+
+def test_extract_far_ignores_regions_unlike_sky_or_low_in_frame():
+    from photo2stamp.segment import extract_far
+
+    labels = np.zeros((100, 100), np.int32)
+    labels[40:60, :50] = 1  # dark building touching the sky
+    labels[40:, 50:] = 2  # sky-colored but reaching the bottom (a white wall)
+    labels[60:, :50] = 3
+    centers = np.array([[80, -5, -15], [30, 0, 0], [78, -4, -12], [20, 0, 0]], np.float32)
+    new_labels, _, far = extract_far(labels, centers, sky_label=0)
+    assert far is None
+    np.testing.assert_array_equal(new_labels, labels)
+
+
+def test_assign_colors_far_label_gets_far_color():
+    from photo2stamp.palette import assign_colors, get_palette, hex_to_bgr
+
+    palette = get_palette("teal")
+    centers = np.array([[80, 0, 0], [40, 0, 0], [70, 0, 0]], np.float32)
+    colors = assign_colors(centers, palette, sky_labels=frozenset({0}), far_labels=frozenset({2}))
+    assert tuple(colors[2]) == hex_to_bgr(palette.far)
+
+
+def test_extract_far_uses_pixel_colors_when_clusters_merge_haze_and_wall():
+    from photo2stamp.segment import extract_far
+
+    # one cluster (1) covers both a hazy skyline band and a wall reaching the ground,
+    # but their actual pixel colors differ: only the haze is close to the sky color.
+    labels = np.zeros((100, 100), np.int32)
+    labels[40:, :] = 1
+    centers = np.array([[80, -5, -15], [70, -2, -5]], np.float32)
+    lab = np.zeros((100, 100, 3), np.float32)
+    lab[:40] = (80, -5, -15)
+    lab[40:55] = (78, -4, -12)  # haze
+    lab[55:] = (60, 0, 2)  # wall
+    new_labels, _, far = extract_far(labels, centers, sky_label=0, lab=lab)
+    assert far is not None
+    assert new_labels[45, 50] == far
+    assert new_labels[80, 50] == 1
+
+
+def test_extract_far_compares_with_nearby_sky_not_mean_sky():
+    from photo2stamp.segment import extract_far
+
+    # sky is a vertical gradient: deep blue at the top, pale near the horizon
+    labels = np.zeros((100, 100), np.int32)
+    labels[50:, :] = 1
+    centers = np.array([[70, 0, -30], [60, 0, 0]], np.float32)
+    lab = np.zeros((100, 100, 3), np.float32)
+    rows = np.linspace(0, 1, 50)[:, None]
+    lab[:50, :, 0] = 55 + 30 * rows
+    lab[:50, :, 2] = -45 + 40 * rows  # -45 at top -> -5 at the horizon
+    lab[50:65] = (84, 0, -4)  # haze: close to the horizon sky, far from the mean sky
+    lab[65:] = (30, 0, 0)
+    new_labels, _, far = extract_far(labels, centers, sky_label=0, lab=lab)
+    assert far is not None and new_labels[55, 50] == far
+
+
+def test_extract_far_ignores_clouds_inside_the_sky():
+    from photo2stamp.segment import extract_far
+
+    labels = np.zeros((100, 100), np.int32)
+    labels[20:30, 30:60] = 1  # cloud floating in the sky
+    labels[70:, :] = 2  # ground
+    centers = np.array([[75, 0, -20], [80, 0, -12], [30, 0, 0]], np.float32)
+    _, _, far = extract_far(labels, centers, sky_label=0)
+    assert far is None
+
+
+def test_extract_accents_skips_patches_touching_the_top_edge():
+    from photo2stamp.segment import extract_accents, to_lab
+
+    img = np.full((100, 100, 3), 120, np.uint8)
+    img[0:12, 40:60] = (230, 140, 40)  # deep-blue sky corner, saturated
+    labels = np.zeros((100, 100), np.int32)
+    centers = np.array([[50, 0, 0]], np.float32)
+    _, new_centers = extract_accents(to_lab(img), labels, centers, chroma=28, min_area=50)
+    assert new_centers.shape[0] == 1

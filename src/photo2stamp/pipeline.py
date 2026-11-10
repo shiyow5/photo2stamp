@@ -10,6 +10,7 @@ import numpy as np
 from .palette import assign_colors, get_palette
 from .segment import (
     extract_accents,
+    extract_far,
     extract_sky,
     majority_filter,
     merge_small_regions,
@@ -34,6 +35,8 @@ class StampConfig:
     snap_deg: float = 12.0  # edges this close to vertical are made exactly vertical (0 = off)
     palette: str = "teal"  # preset name or "original"
     detect_sky: bool = True
+    detect_far: bool = True  # paint hazy distant scenery under the sky as one silhouette color
+    far_delta: float = 20.0  # max Lab distance from the sky color for a region to count as far
     accent_chroma: float = 28.0  # clusters more saturated than this become accent colors
     shape: str = "rect"  # "rect" or "circle"
     tone_mapping: str = "area"  # "area" (equalize by pixel area) or "rank" (one tone per cluster)
@@ -119,15 +122,23 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
     )
     accent_ids = range(n_base, centers.shape[0])
 
-    sky = frozenset()
+    sky: frozenset[int] = frozenset()
+    far: frozenset[int] = frozenset()
     if cfg.detect_sky:
         labels, centers, sky_label = extract_sky(labels, centers)
         sky = frozenset() if sky_label is None else frozenset({sky_label})
+        if sky_label is not None and cfg.detect_far:
+            labels, centers, far_label = extract_far(
+                labels, centers, sky_label, cfg.far_delta, lab=to_lab(smoothed)
+            )
+            far = frozenset() if far_label is None else frozenset({far_label})
 
     weights = None
     if cfg.tone_mapping == "area":
         weights = np.bincount(labels.ravel(), minlength=centers.shape[0])
-    colors = assign_colors(centers, get_palette(cfg.palette), sky, cfg.accent_chroma, weights)
+    colors = assign_colors(
+        centers, get_palette(cfg.palette), sky, cfg.accent_chroma, weights, far_labels=far
+    )
     labels, colors, old_to_new = _unify_by_color(labels, colors)
     keep = frozenset(int(old_to_new[i]) for i in accent_ids)
     labels = merge_small_regions(labels, min_area, keep=keep)

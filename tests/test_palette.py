@@ -75,3 +75,11 @@ def test_assign_colors_area_weighted_spreads_tones_by_area():
     assert tuple(by_area[1]) == tones[2]
     assert tuple(by_area[0]) == tones[0]
     assert tuple(by_area[3]) == tones[-1]
+
+
+def test_teal_lit_billboard_becomes_orange_not_yellow():
+    # measured mean Lab of the vivid part of the lit billboard in examples/photo.jpg (hue ~74 deg)
+    palette = get_palette("teal")
+    billboard = np.array([[69.3, 10.2, 36.5]], np.float32)
+    b, g, r = (int(c) for c in assign_colors(billboard, palette, accent_chroma=20)[0])
+    assert (b, g, r) == hex_to_bgr("#EB8F35")

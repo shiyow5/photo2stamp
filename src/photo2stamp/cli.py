@@ -28,6 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-size", type=int, default=d.max_size, help="resize long side; 0 keeps size")
     p.add_argument("--accent-chroma", type=float, default=d.accent_chroma, help="saturation threshold for accents")
     p.add_argument("--no-sky", action="store_true", help="disable sky detection")
+    p.add_argument("--no-far", action="store_true", help="disable distant-skyline silhouette")
+    p.add_argument("--far-delta", type=float, default=d.far_delta, help="max color distance to sky for far")
     p.add_argument("--shape", default=d.shape, choices=SHAPES, help="stamp outline")
     p.add_argument(
         "--tone-mapping", default=d.tone_mapping, choices=TONE_MAPPINGS,
@@ -49,6 +51,8 @@ def _config(args: argparse.Namespace) -> StampConfig:
         snap_deg=args.snap_deg,
         palette=args.palette,
         detect_sky=not args.no_sky,
+        detect_far=not args.no_far,
+        far_delta=args.far_delta,
         accent_chroma=args.accent_chroma,
         shape=args.shape,
         tone_mapping=args.tone_mapping,

@@ -16,7 +16,7 @@ def test_stylize_output_uses_only_palette_colors(city_image):
     config = StampConfig(colors=6, palette="teal", max_size=0)
     result = stylize(city_image, config)
     palette = get_palette("teal")
-    allowed = {hex_to_bgr(c) for c in (*palette.tones, palette.sky, *palette.accents)}
+    allowed = {hex_to_bgr(c) for c in (*palette.tones, palette.sky, palette.far, *palette.accents)}
     used = {tuple(int(v) for v in c) for c in result.flat_colors}
     assert used <= allowed
     assert result.image.shape[:2] == city_image.shape[:2]

@@ -109,12 +109,62 @@ def extract_accents(
     for i in range(1, count):
         if stats[i, cv2.CC_STAT_AREA] < max(1, min_area):
             continue
+        if stats[i, cv2.CC_STAT_TOP] == 0:  # vivid patches at the top edge are sky, not signs
+            continue
         mask = comp == i
         new_labels[mask] = centers.shape[0] + len(extra)
         extra.append(lab[mask].mean(axis=0))
     if not extra:
         return new_labels, centers.copy()
     return new_labels, np.vstack([centers, np.array(extra, np.float32)]).astype(np.float32)
+
+
+def extract_far(
+    labels: np.ndarray,
+    centers: np.ndarray,
+    sky_label: int,
+    max_delta: float = 20.0,
+    max_bottom: float = 0.75,
+    lab: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, int | None]:
+    """Relabel hazy distant scenery (aerial perspective) as one 'far' region.
+
+    Distant scenery seen through haze takes on the sky's color. A pixel is a candidate
+    when its Lab color (from `lab`, or its cluster center if `lab` is None) is within
+    `max_delta` of the mean sky color. Connected candidate patches that touch the sky
+    and end above `max_bottom` of the image height become far; a sky-colored wall that
+    reaches the ground is not distant scenery.
+    Returns (new_labels, new_centers, far_label) or copies and None if nothing matched.
+    """
+    h = labels.shape[0]
+    sky = labels == sky_label
+    if not sky.any():
+        return labels.copy(), centers.copy(), None
+    pixels = centers[labels] if lab is None else lab
+    # compare each pixel with the nearest sky pixel: skies are graded, and haze matches
+    # the pale sky at the horizon, not the deep blue overhead
+    _, (rows, cols) = ndimage.distance_transform_edt(~sky, return_indices=True)
+    local_sky = pixels[rows, cols]
+    close = (np.linalg.norm(pixels - local_sky, axis=2) <= max_delta) & ~sky
+    # far scenery lies below the sky; patches with sky underneath them are clouds
+    has_sky = sky.any(axis=0)
+    horizon = np.where(has_sky, h - 1 - np.argmax(sky[::-1], axis=0), h)
+    close &= np.arange(h)[:, None] > horizon[None, :]
+    close = cv2.morphologyEx(close.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    ring = cv2.dilate(sky.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool) & ~sky
+
+    count, comp, stats, _ = cv2.connectedComponentsWithStats(close, connectivity=4)
+    far = np.zeros(labels.shape, bool)
+    for i in np.unique(comp[ring & (comp > 0)]):
+        bottom = stats[i, cv2.CC_STAT_TOP] + stats[i, cv2.CC_STAT_HEIGHT]
+        if bottom <= max_bottom * h:
+            far |= comp == i
+    if not far.any():
+        return labels.copy(), centers.copy(), None
+    far_label = centers.shape[0]
+    new_labels = np.where(far, far_label, labels).astype(np.int32)
+    new_centers = np.vstack([centers, pixels[far].mean(axis=0, keepdims=True)]).astype(np.float32)
+    return new_labels, new_centers, far_label
 
 
 def extract_sky(

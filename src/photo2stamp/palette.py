@@ -20,12 +20,14 @@ class Palette:
     tones:   neutral colors ordered dark -> light; clusters are mapped by lightness rank.
     sky:     color used for the detected sky region.
     accents: vivid colors used for strongly saturated clusters (signs, lights, plants).
+    far:     color for hazy distant scenery right under the sky (skyline silhouette).
     """
 
     name: str
     tones: tuple[str, ...]
     sky: str
     accents: tuple[str, ...]
+    far: str
 
 
 PRESETS: dict[str, Palette] = {
@@ -35,19 +37,22 @@ PRESETS: dict[str, Palette] = {
             name="teal",
             tones=("#173F4A", "#22525E", "#3A6875", "#5F8590", "#93ABB3", "#E8DCBB", "#F3F1EA"),
             sky="#8DCAE6",
-            accents=("#D9472F", "#F2C24B", "#3E7D6B"),
+            accents=("#D9472F", "#EB8F35", "#F2C24B", "#3E7D6B"),
+            far="#2F6684",
         ),
         Palette(
             name="warm",
             tones=("#3B2A26", "#6B3F2F", "#A65E3F", "#D99A6C", "#F2D3A7", "#FBF1E1"),
             sky="#F4D8B8",
             accents=("#2F6F73", "#E0A526", "#C2412D"),
+            far="#C98F6B",
         ),
         Palette(
             name="mono",
             tones=("#1A1A1A", "#4D4D4D", "#8C8C8C", "#C8C8C8", "#F2F2F2"),
             sky="#DADADA",
             accents=("#D7263D",),
+            far="#A8A8A8",
         ),
     )
 }
@@ -108,6 +113,7 @@ def assign_colors(
     sky_labels: frozenset[int] = frozenset(),
     accent_chroma: float = 35.0,
     weights: np.ndarray | None = None,
+    far_labels: frozenset[int] = frozenset(),
 ) -> np.ndarray:
     """Map each cluster center (Lab) to a flat BGR color. Returns a new (K,3) uint8 array.
 
@@ -131,6 +137,8 @@ def assign_colors(
     for i in range(k):
         if i in sky_labels:
             out[i] = hex_to_bgr(palette.sky)
+        elif i in far_labels:
+            out[i] = hex_to_bgr(palette.far)
         elif len(accents) and chroma[i] >= accent_chroma:
             out[i] = accents[_nearest_accent(centers[i], accents_lab)]
         else:
