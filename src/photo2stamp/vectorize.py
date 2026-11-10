@@ -106,10 +106,13 @@ def shapes_to_svg(
     gap: float = 0.0,
     paper: tuple[int, int, int] = (255, 255, 255),
     overlay: str = "",
+    offset: tuple[int, int] = (0, 0),
 ) -> str:
     """Serialize shapes as an SVG document (one <path> per region), with an optional stamp frame.
 
     `overlay` (e.g. the outline group) is drawn over the regions, inside the stamp clip.
+    `offset` (x, y) shifts the art so that a window of `size` starting there is shown
+    (used to cut a stamp out of art drawn for the whole photo).
 
     `ring` and `gap` are fractions of the stamp size, as in frame_stamp.
     """
@@ -121,12 +124,16 @@ def shapes_to_svg(
         head.append(f'<defs><clipPath id="stamp">{_svg_outline(shape, w, h, 0, "")}</clipPath></defs>')
         clip = ' clip-path="url(#stamp)"'
     body = [f"<g{clip}>", f'<rect width="{w}" height="{h}" fill="{bg}"/>']
+    if offset != (0, 0):
+        body.append(f'<g transform="translate({-offset[0]} {-offset[1]})">')
     for s in shapes:
         d = "M" + " L".join(f"{x + 0.5:g} {y + 0.5:g}" for x, y in s.points) + " Z"
         c = bgr_to_hex(s.color)
         body.append(f'<path d="{d}" fill="{c}" stroke="{c}" stroke-width="1" stroke-linejoin="round"/>')
     if overlay:
         body.append(overlay)
+    if offset != (0, 0):
+        body.append("</g>")
     body.append("</g>")
     if shape != "rect" and ring_color is not None and ring > 0:
         side = min(w, h)

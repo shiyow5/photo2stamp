@@ -48,9 +48,10 @@ def main() -> int:
     p.add_argument("--columns", type=int, default=2)
     p.add_argument("--shape", default="rect")
     p.add_argument("--palette", default="natural")
+    p.add_argument("--crop", default="before", choices=["before", "after"])
     args = p.parse_args()
 
-    config = StampConfig(shape=args.shape, palette=args.palette)
+    config = StampConfig(shape=args.shape, palette=args.palette, crop=args.crop)
     pairs = [t for t in (_pair(path, config) for path in args.inputs) if t is not None]
     if not pairs:
         return 1

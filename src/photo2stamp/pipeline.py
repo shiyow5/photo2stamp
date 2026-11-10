@@ -36,6 +36,7 @@ NIGHT_L_RANGE = (10.0, 62.0)  # night mode keeps fills dark
 NIGHT_MODES = ("auto", "on", "off")
 LINE_SIZE = 600  # long side of the image the outlines are detected on
 SMOOTHERS = ("l0", "meanshift")
+CROPS = ("before", "after")  # circle/rounded: crop the photo first, or cut the finished art
 _DENSITY_CALM, _DENSITY_BUSY = 0.07, 0.25  # edge density of a calm seascape / a street of trees
 
 
@@ -64,6 +65,7 @@ class StampConfig:
     far_delta: float = 20.0  # max Lab distance from the sky color for a region to count as far
     accent_chroma: float = 28.0  # clusters more saturated than this become accent colors
     shape: str = "rect"  # "rect", "circle" or "rounded" (circle/rounded are cropped square)
+    crop: str = "before"  # "before": stylize the square crop / "after": cut it out of the full art
     ring: float = 0.035  # stamp ring width as a fraction of the stamp size (0 = no ring)
     ring_gap: float = 0.02  # paper-colored gap between the ring and the art
     tone_mapping: str = "area"  # "area" (equalize by pixel area) or "rank" (one tone per cluster)
@@ -78,6 +80,8 @@ class StampConfig:
             raise ValueError(f"shape must be one of {SHAPES}")
         if self.night not in NIGHT_MODES:
             raise ValueError(f"night must be one of {NIGHT_MODES}")
+        if self.crop not in CROPS:
+            raise ValueError(f"crop must be one of {CROPS}")
         if self.smoother not in SMOOTHERS:
             raise ValueError(f"smoother must be one of {SMOOTHERS}")
         if min(self.l0_lambda, self.line_sigma, self.line_threshold, self.line_min_length, self.line_width) < 0:
@@ -153,8 +157,8 @@ def auto_work_size(density: float) -> int:
 
 
 
-def crop_square(image: np.ndarray, focus_gain: float = 1.2) -> np.ndarray:
-    """Crop to a square (stamps are round or square), centered on the subject.
+def square_window(image: np.ndarray, focus_gain: float = 1.2) -> tuple[int, int, int]:
+    """(y, x, side) of the square a stamp is cut from, centered on the subject.
 
     The window slides along the long side and goes where the edge density is highest,
     since the subject is usually the most detailed part. It stays centered unless some
@@ -163,7 +167,7 @@ def crop_square(image: np.ndarray, focus_gain: float = 1.2) -> np.ndarray:
     h, w = image.shape[:2]
     s = min(h, w)
     if h == w:
-        return image.copy()
+        return 0, 0, s
     long_side = max(h, w)
     scale = min(1.0, 200 / long_side)
     small = cv2.resize(image, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
@@ -178,9 +182,13 @@ def crop_square(image: np.ndarray, focus_gain: float = 1.2) -> np.ndarray:
         offset = min(long_side - s, round(best / scale))
     else:
         offset = (long_side - s) // 2
-    if w > h:
-        return image[:, offset : offset + s].copy()
-    return image[offset : offset + s, :].copy()
+    return (0, offset, s) if w > h else (offset, 0, s)
+
+
+def crop_square(image: np.ndarray, focus_gain: float = 1.2) -> np.ndarray:
+    """Crop to a square (stamps are round or square), centered on the subject."""
+    y, x, s = square_window(image, focus_gain)
+    return image[y : y + s, x : x + s].copy()
 
 
 def _smooth(small: np.ndarray, cfg: StampConfig) -> np.ndarray:
@@ -248,7 +256,7 @@ def _frame_colors(colors: np.ndarray, palette_name: str) -> tuple[tuple[int, int
 def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult:
     cfg = config or StampConfig()
     img = to_bgr_uint8(image)
-    if cfg.shape != "rect":
+    if cfg.shape != "rect" and cfg.crop == "before":
         img = crop_square(img)
     img = resize_long_side(img, cfg.max_size)
     h, w = img.shape[:2]
@@ -282,9 +290,17 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
     if cfg.shape == "rect":
         return StampResult(flat, shapes_to_svg(shapes, (h, w), overlay=overlay), labels, used)
 
+    y, x, side = (0, 0, 0)
+    if cfg.crop == "after":  # cut the stamp out of the finished full-photo art
+        y, x, side = square_window(img)
+        flat, labels = flat[y : y + side, x : x + side], labels[y : y + side, x : x + side]
+        used = colors[np.unique(labels)]
+        h = w = side
     ring_color, paper = _frame_colors(used, cfg.palette)
     out = frame_stamp(flat, cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper)
-    svg = shapes_to_svg(shapes, (h, w), cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper, overlay=overlay)
+    svg = shapes_to_svg(
+        shapes, (h, w), cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper, overlay=overlay, offset=(x, y)
+    )
     return StampResult(out, svg, labels, used)
 
 

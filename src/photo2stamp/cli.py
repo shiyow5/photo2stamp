@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 
 from .palette import NATURAL, ORIGINAL, PRESETS
-from .pipeline import TONE_MAPPINGS, StampConfig, stylize
+from .pipeline import CROPS, TONE_MAPPINGS, StampConfig, stylize
 from .vectorize import SHAPES
 
 
@@ -39,6 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--far-delta", type=float, default=d.far_delta, help="max color distance to sky for far")
     p.add_argument("--shape", default=d.shape, choices=SHAPES, help="stamp outline")
     p.add_argument(
+        "--crop", default=d.crop, choices=CROPS,
+        help="circle/rounded: before = stylize the square crop (default) / after = cut it out of the full art",
+    )
+    p.add_argument(
         "--tone-mapping", default=d.tone_mapping, choices=TONE_MAPPINGS,
         help="area: spread tones by pixel area (default) / rank: one tone per cluster",
     )
@@ -67,6 +71,7 @@ def _config(args: argparse.Namespace) -> StampConfig:
         far_delta=args.far_delta,
         accent_chroma=args.accent_chroma,
         shape=args.shape,
+        crop=args.crop,
         tone_mapping=args.tone_mapping,
         seed=args.seed,
     )

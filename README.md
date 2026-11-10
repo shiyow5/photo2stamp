@@ -24,7 +24,7 @@ SVG出力の例は[examples/photo_natural.svg](examples/photo_natural.svg)にあ
 
 ![円形スタンプの一覧](examples/gallery_circle.jpg)
 
-枠なし(`--shape rect`)の一覧は[examples/gallery.jpg](examples/gallery.jpg)、`teal`パレットの一覧は[examples/gallery_teal.jpg](examples/gallery_teal.jpg)にあります。
+枠なし(`--shape rect`)の一覧は[examples/gallery.jpg](examples/gallery.jpg)、`teal`パレットの一覧は[examples/gallery_teal.jpg](examples/gallery_teal.jpg)にあります。枠なしの絵をそのまま丸く切り抜いた一覧(`--crop after`)は[examples/gallery_circle_after.jpg](examples/gallery_circle_after.jpg)です。
 
 出力を1枚ずつ元写真と並べ、何が写っているか分かるかを目で確認した結果です(枠なしの場合)。
 
@@ -39,7 +39,7 @@ SVG出力の例は[examples/photo_natural.svg](examples/photo_natural.svg)にあ
 | 夕景の橋 | ほぼ分かる | 灯りの付いた橋の帯、川、夕焼け。橋脚のアーチは出ない |
 | 寺院 | ほぼ分かる | 段になった塔の形。極彩色の彫刻は灰色と青の面になる |
 
-合成画像は`scripts/make_synthetic.py`で生成しました。一覧は`scripts/gallery.py`で作り直せます(`--shape`と`--palette`を指定できます)。
+合成画像は`scripts/make_synthetic.py`で生成しました。一覧は`scripts/gallery.py`で作り直せます(`--shape`、`--palette`、`--crop`を指定できます)。
 
 ### 写真の出典
 
@@ -69,6 +69,7 @@ uv run photo2stamp photo.jpg -o out --svg
 # out/photo.png と out/photo.svg ができる
 
 uv run photo2stamp *.jpg -o out --shape circle                  # 縁取り付きの丸いスタンプ
+uv run photo2stamp *.jpg -o out --shape circle --crop after      # 枠なしの絵を丸く切り抜く
 uv run photo2stamp photo.jpg -o out --work-size 150 --colors 5     # もっと大胆に抽象化する
 uv run photo2stamp photo.jpg -o out --palette original          # 写真の色を平坦化して使う
 ```
@@ -112,6 +113,7 @@ open("stamp.svg", "w").write(result.svg)
 | オプション | 既定値 | 内容 |
 |---|---|---|
 | `--shape` | `rect` | `circle`/`rounded`にすると正方形に切り抜き、縁取り付きのスタンプ(透過PNG)にする |
+| `--crop` | `before` | `circle`/`rounded`の切り抜き方。`before`は写真を先に正方形に切り、その範囲だけで色と線を決める。`after`は写真全体で絵を作ってから切り抜くので、`rect`の絵と同じ色・線になる |
 | `--palette` | `natural` | `natural`(写真の色相を残して整える) / `teal` / `warm` / `mono`(固定パレット、明度だけで塗り分ける) / `original`(写真の色そのまま) |
 | `--no-lines` | なし | 輪郭線を描かない(色の面だけ) |
 | `--night` | `auto` | 夜モード。`auto`は写真の明るさで判定。`on`/`off`で強制 |
