@@ -172,12 +172,22 @@ def auto_work_size(density: float) -> int:
 
 
 
+def _color_saliency(image: np.ndarray) -> np.ndarray:
+    """Frequency-tuned saliency (Achanta, Hemami, Estrada & Susstrunk, CVPR 2009): how far
+    each slightly blurred pixel is from the image's mean Lab color. A plain colorful
+    subject (a flower, a dish) stands out even when the background has more edges."""
+    lab = cv2.cvtColor(image[..., :3].astype(np.float32) / 255.0, cv2.COLOR_BGR2Lab)
+    blur = cv2.GaussianBlur(lab, (0, 0), 2.0)
+    return np.linalg.norm(blur - lab.reshape(-1, 3).mean(axis=0), axis=2).astype(np.float64)
+
+
 def square_window(image: np.ndarray, focus_gain: float = 1.2) -> tuple[int, int, int]:
     """(y, x, side) of the square a stamp is cut from, centered on the subject.
 
-    The window slides along the long side and goes where the edge density is highest,
-    since the subject is usually the most detailed part. It stays centered unless some
-    other window has `focus_gain` times more detail.
+    The window slides along the long side and goes where the subject most likely is:
+    edge density (detail) plus color saliency (a plain colorful subject), each
+    normalized to its mean. It stays centered unless some other window scores
+    `focus_gain` times more.
     """
     h, w = image.shape[:2]
     s = min(h, w)
@@ -188,7 +198,10 @@ def square_window(image: np.ndarray, focus_gain: float = 1.2) -> tuple[int, int,
     small = cv2.resize(image, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
     gray = cv2.cvtColor(small[..., :3], cv2.COLOR_BGR2GRAY)
     edges = (cv2.Canny(gray, 60, 150) > 0).astype(np.float64)
-    profile = edges.sum(axis=0 if w > h else 1)
+    axis = 0 if w > h else 1
+    edge_profile = edges.sum(axis=axis)
+    sal_profile = _color_saliency(small).sum(axis=axis)
+    profile = edge_profile / max(edge_profile.mean(), 1e-9) + sal_profile / max(sal_profile.mean(), 1e-9)
     win = max(1, min(len(profile), round(s * scale)))
     sums = np.convolve(profile, np.ones(win), mode="valid")
     center = (len(sums) - 1) // 2
@@ -299,6 +312,7 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
 
     labels = upscale_labels(small_labels, (h, w), len(colors)) if (sh, sw) != (h, w) else small_labels
     shapes = labels_to_shapes(labels, colors, cfg.simplify * float(np.hypot(h, w)), cfg.snap_deg)
+    base = labels_to_shapes(labels, colors, 0)  # exact, under the smooth shapes in the SVG
     flat = render_png(shapes, (h, w), base=colors[labels])
     used = colors[np.unique(labels)]
 
@@ -325,7 +339,7 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
             overlay += lines_svg(flat, lamps, hex_to_bgr(LIGHT_INK), "dark")
             flat = draw_lines(flat, lamps, hex_to_bgr(LIGHT_INK), "dark")
     if cfg.shape == "rect":
-        return StampResult(flat, shapes_to_svg(shapes, (h, w), overlay=overlay), labels, used)
+        return StampResult(flat, shapes_to_svg(shapes, (h, w), overlay=overlay, base=base), labels, used)
 
     y, x, side = (0, 0, 0)
     if cfg.crop == "after":  # cut the stamp out of the finished full-photo art
@@ -333,11 +347,13 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
         flat, labels = flat[y : y + side, x : x + side].copy(), labels[y : y + side, x : x + side].copy()
         used = colors[np.unique(labels)]
         shapes = [sh for sh in shapes if _overlaps(sh.points, x, y, side)]  # keep the SVG small
+        base = [sh for sh in base if _overlaps(sh.points, x, y, side)]
         h = w = side
     ring_color, paper = _frame_colors(used, cfg.palette)
     out = frame_stamp(flat, cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper)
     svg = shapes_to_svg(
-        shapes, (h, w), cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper, overlay=overlay, offset=(x, y)
+        shapes, (h, w), cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper, overlay=overlay, offset=(x, y),
+        base=base,
     )
     return StampResult(out, svg, labels, used)
 

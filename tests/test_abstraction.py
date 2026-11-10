@@ -149,3 +149,18 @@ def test_quantize_single_pixel_returns_lab_centers():
 def test_ring_plus_gap_must_leave_room_for_the_art():
     with pytest.raises(ValueError):
         StampConfig(ring=0.3, ring_gap=0.25)
+
+
+def test_square_crop_finds_a_plain_colorful_subject():
+    # a smooth red flower on the left, busy grey gravel on the right: the subject is
+    # the flower even though the gravel has more edges
+    import cv2
+
+    from photo2stamp.pipeline import square_window
+
+    rng = np.random.default_rng(0)
+    img = np.full((200, 500, 3), 120, np.uint8)
+    img[:, 250:] = np.clip(120 + rng.normal(0, 40, (200, 250, 3)), 0, 255).astype(np.uint8)
+    cv2.circle(img, (110, 100), 60, (40, 40, 210), -1)
+    y, x, s = square_window(img)
+    assert x < 60  # the window covers the flower (center x 110)

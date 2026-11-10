@@ -78,3 +78,18 @@ def test_snap_vertical_keeps_diagonals():
 
     pts = np.array([[0, 0], [30, 40], [0, 40]], np.int32)
     np.testing.assert_array_equal(snap_vertical(pts, max_deg=10), pts)
+
+
+def test_svg_has_an_exact_base_layer_under_the_smooth_shapes():
+    labels = _two_regions()
+    shapes = labels_to_shapes(labels, COLORS, epsilon=3.0)
+    base = labels_to_shapes(labels, COLORS, epsilon=0)
+    svg = shapes_to_svg(shapes, labels.shape, base=base)
+    assert svg.index('<g id="base">') < svg.index('<g id="shapes">')
+    ET.fromstring(svg)  # well-formed
+
+
+def test_stylize_svg_contains_the_base_layer(city_image):
+    from photo2stamp import StampConfig, stylize
+
+    assert '<g id="base">' in stylize(city_image, StampConfig(max_size=0)).svg

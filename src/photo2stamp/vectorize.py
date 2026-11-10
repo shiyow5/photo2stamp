@@ -49,7 +49,8 @@ def labels_to_shapes(
     shapes: list[Shape] = []
     for lab in np.unique(labels):
         mask = (labels == lab).astype(np.uint8)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        chain = cv2.CHAIN_APPROX_NONE if epsilon > 0 else cv2.CHAIN_APPROX_SIMPLE
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, chain)
         color = tuple(int(c) for c in colors[lab])
         for contour in contours:
             approx = cv2.approxPolyDP(contour, epsilon, True) if epsilon > 0 else contour
@@ -97,6 +98,12 @@ def _svg_outline(shape: str, w: int, h: int, inset: float, attrs: str) -> str:
     return f'<rect x="{x:g}" y="{y:g}" width="{side:g}" height="{side:g}" rx="{rx:g}" {attrs}/>'
 
 
+def _shape_path(shape: Shape) -> str:
+    d = "M" + " L".join(f"{x + 0.5:g} {y + 0.5:g}" for x, y in shape.points) + " Z"
+    c = bgr_to_hex(shape.color)
+    return f'<path d="{d}" fill="{c}" stroke="{c}" stroke-width="1" stroke-linejoin="round"/>'
+
+
 def shapes_to_svg(
     shapes: list[Shape],
     size: tuple[int, int],
@@ -107,10 +114,14 @@ def shapes_to_svg(
     paper: tuple[int, int, int] = (255, 255, 255),
     overlay: str = "",
     offset: tuple[int, int] = (0, 0),
+    base: list[Shape] | None = None,
 ) -> str:
     """Serialize shapes as an SVG document (one <path> per region), with an optional stamp frame.
 
     `overlay` (e.g. the outline group) is drawn over the regions, inside the stamp clip.
+    `base` (shapes traced without simplification) is drawn first, like the label raster
+    under the PNG: simplified neighbours leave thin gaps, and the gaps then show the right
+    local color instead of the background.
     `offset` (x, y) shifts the art so that a window of `size` starting there is shown
     (used to cut a stamp out of art drawn for the whole photo).
 
@@ -126,10 +137,13 @@ def shapes_to_svg(
     body = [f"<g{clip}>", f'<rect width="{w}" height="{h}" fill="{bg}"/>']
     if offset != (0, 0):
         body.append(f'<g transform="translate({-offset[0]} {-offset[1]})">')
-    for s in shapes:
-        d = "M" + " L".join(f"{x + 0.5:g} {y + 0.5:g}" for x, y in s.points) + " Z"
-        c = bgr_to_hex(s.color)
-        body.append(f'<path d="{d}" fill="{c}" stroke="{c}" stroke-width="1" stroke-linejoin="round"/>')
+    if base:
+        body.append('<g id="base">')
+        body.extend(_shape_path(s) for s in base)
+        body.append("</g>")
+    body.append('<g id="shapes">')
+    body.extend(_shape_path(s) for s in shapes)
+    body.append("</g>")
     if overlay:
         body.append(overlay)
     if offset != (0, 0):
