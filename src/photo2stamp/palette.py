@@ -65,9 +65,10 @@ NATURAL_PALETTE = Palette(name=NATURAL, tones=(), sky="", accents=(), far="")
 # Hue anchors (Lab hue angle, degrees): red, orange, yellow, green, teal, blue, sky blue, purple.
 # Measured skies in the examples sit at 245..272 deg; 280 rendered them lavender.
 _HUE_ANCHORS = np.radians([30, 60, 88, 135, 190, 230, 262, 320])
-_NEUTRAL_CHROMA = 10.0  # below this a color is treated as grey
-_MUTED, _VIVID = 30.0, 55.0  # output chroma for muted / vivid colors
+_NEUTRAL_CHROMA = 7.0  # below this a color is treated as grey (shadowed leaves are ~9)
+_MUTED, _VIVID = 40.0, 64.0  # output chroma for muted / vivid colors
 _L_RANGE = (34.0, 95.0)  # output lightness range: light enough for ink outlines to show
+_COLOR_L_MAX = 78.0  # max lightness of chromatic colors
 _L_STEP = 6.0  # lightness is snapped to this step so near-equal tones merge
 
 
@@ -212,6 +213,9 @@ def natural_colors(
     stretched = lo + (L - L.min()) / max(float(L.max() - L.min()), 1e-6) * (hi - lo) if len(L) > 1 else L
     out_l = 0.5 * stretched + 0.5 * _equalized_lightness(L, weights, (lo, hi))
     out_l = np.clip(np.round(out_l / _L_STEP) * _L_STEP, lo, hi)
-    out_c = out_c * np.clip((L - 10.0) / 40.0, 0.15, 1.0)  # colors that were dark in the photo stay muted
+    # very light colors fall outside sRGB and get washed out: only greys may go near white
+    out_l = np.where(chroma < _NEUTRAL_CHROMA, out_l, np.minimum(out_l, _COLOR_L_MAX))
+    if l_range is not None and l_range[1] < 80:  # night range: dark colors stay muted (no maroon night sky)
+        out_c = out_c * np.clip((L - 10.0) / 40.0, 0.15, 1.0)
     lab = np.stack([out_l, out_c * np.cos(out_h), out_c * np.sin(out_h)], axis=1)
     return lab_to_bgr(lab)

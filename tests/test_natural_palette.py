@@ -67,7 +67,22 @@ def test_natural_sky_hue_is_blue_not_purple():
     assert b > r + 40 and g > r and r < 150  # lavender (r ~170) is not sky blue
 
 
-def test_natural_dark_colors_are_desaturated():
+def test_natural_dark_colors_are_desaturated_in_night_range():
     # a brownish night sky must not turn maroon
-    b, g, r = natural_colors(_lab((12, 8, 10), (60, 0, 0)))[0].astype(int)
+    b, g, r = natural_colors(_lab((12, 8, 10), (60, 0, 0)), l_range=(10.0, 62.0))[0].astype(int)
     assert max(b, g, r) - min(b, g, r) < 25
+
+
+def test_natural_daytime_shadow_foliage_stays_green():
+    # measured dark leaf cluster of examples/free/street.jpg
+    b, g, r = natural_colors(_lab((15.6, -8.5, -1.1), (61, -4, 2.2)))[0].astype(int)
+    assert g > r + 10  # greenish, not grey
+
+
+def test_natural_vivid_colors_are_strong():
+    lab_out = None
+    from photo2stamp.palette import bgr_to_lab
+
+    out = natural_colors(_lab((60, 30, 50), (40, 0, 0)))
+    lab_out = bgr_to_lab(out)
+    assert np.hypot(*lab_out[0, 1:]) >= 55
