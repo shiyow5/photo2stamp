@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: uv sync
+      - run: uv run pytest --cov-fail-under=80
+      - name: CLI smoke test
+        run: |
+          uv run photo2stamp examples/photo.jpg -o out --svg --shape circle
+          uv run photo2stamp examples/free/castle.jpg -o out --svg --shape rounded --crop after
+          for f in out/photo.png out/photo.svg out/castle.png out/castle.svg; do test -s "$f"; done

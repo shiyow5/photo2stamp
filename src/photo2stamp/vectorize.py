@@ -203,12 +203,3 @@ def frame_stamp(
     color = color / np.maximum(outer, 1e-6)[..., None]
     alpha = np.round(outer * 255).astype(np.uint8)
     return np.dstack([np.clip(np.round(color), 0, 255).astype(np.uint8), alpha])
-
-
-def apply_shape_mask(image: np.ndarray, shape: str) -> np.ndarray:
-    """Return a BGRA copy whose alpha channel cuts the image into the given stamp shape."""
-    if shape not in SHAPES:
-        raise ValueError(f"unknown shape {shape!r} (choose from: {', '.join(SHAPES)})")
-    h, w = image.shape[:2]
-    alpha = np.round(_coverage(h, w, shape, 0) * 255).astype(np.uint8)
-    return np.dstack([image[..., :3], alpha])

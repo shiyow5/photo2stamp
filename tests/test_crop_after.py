@@ -50,3 +50,28 @@ def test_cli_crop_after(tmp_path, city_image):
     cv2.imwrite(str(src), city_image)
     assert main([str(src), "-o", str(tmp_path / "o"), "--shape", "circle", "--crop", "after", "--svg"]) == 0
     assert (tmp_path / "o" / "c.png").exists() and (tmp_path / "o" / "c.svg").exists()
+
+
+def test_crop_after_needs_a_stamp_shape():
+    with pytest.raises(ValueError):
+        StampConfig(shape="rect", crop="after")
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_crop_after_matches_rect_when_resized(city_image, transpose):
+    import cv2
+
+    img = np.ascontiguousarray(city_image.transpose(1, 0, 2)) if transpose else city_image  # landscape / portrait
+    rect = stylize(img, StampConfig(max_size=200)).image
+    cut = stylize(img, StampConfig(max_size=200, shape="rounded", crop="after", ring=0, ring_gap=0)).image
+    small = cv2.resize(img, (rect.shape[1], rect.shape[0]), interpolation=cv2.INTER_AREA)
+    y, x, s = square_window(small)
+    inside = cut[..., 3] == 255
+    assert np.array_equal(cut[..., :3][inside], rect[y : y + s, x : x + s][inside])
+
+
+def test_crop_after_svg_drops_shapes_outside_the_window(city_image):
+    wide = np.ascontiguousarray(np.concatenate([city_image] * 3, axis=1))  # 240 x 540
+    full = stylize(wide, StampConfig(max_size=0)).svg
+    cut = stylize(wide, StampConfig(max_size=0, shape="circle", crop="after")).svg
+    assert cut.count("<path") < full.count("<path")

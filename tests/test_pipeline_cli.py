@@ -154,3 +154,27 @@ def test_natural_palette_skips_far_silhouette(monkeypatch, city_image):
     assert not called
     stylize(city_image, StampConfig(max_size=0, palette="teal"))
     assert called
+
+
+def test_cli_version(capsys):
+    import pytest as _pytest
+
+    from photo2stamp import __version__
+
+    with _pytest.raises(SystemExit) as exc:
+        main(["--version"])
+    assert exc.value.code == 0
+    assert __version__ in capsys.readouterr().out
+
+
+def test_cli_line_and_smoother_options_reach_config():
+    from photo2stamp.cli import _config, build_parser
+
+    args = build_parser().parse_args(
+        ["x.jpg", "--smoother", "meanshift", "--line-width", "3", "--line-threshold", "0.02",
+         "--line-min-length", "0.1", "--line-sigma", "2.5"]
+    )
+    cfg = _config(args)
+    assert (cfg.smoother, cfg.line_width, cfg.line_threshold, cfg.line_min_length, cfg.line_sigma) == (
+        "meanshift", 3.0, 0.02, 0.1, 2.5
+    )

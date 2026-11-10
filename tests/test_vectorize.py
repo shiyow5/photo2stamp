@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from photo2stamp.vectorize import (
-    apply_shape_mask,
+    frame_stamp,
     labels_to_shapes,
     render_png,
     shapes_to_svg,
@@ -54,23 +54,14 @@ def test_shapes_to_svg_circle_adds_clip():
     assert "clipPath" in svg
 
 
-def test_apply_shape_mask_circle_makes_corners_transparent():
-    img = np.full((40, 40, 3), 128, np.uint8)
-    out = apply_shape_mask(img, "circle")
-    assert out.shape == (40, 40, 4)
-    assert out[0, 0, 3] == 0
-    assert out[20, 20, 3] == 255
-
-
-def test_apply_shape_mask_rect_is_opaque():
-    img = np.full((10, 10, 3), 128, np.uint8)
-    out = apply_shape_mask(img, "rect")
+def test_frame_stamp_rect_is_opaque():
+    out = frame_stamp(np.full((10, 10, 3), 128, np.uint8), "rect", (0, 0, 0), ring=0, gap=0)
     assert (out[..., 3] == 255).all()
 
 
-def test_apply_shape_mask_unknown_raises():
+def test_frame_stamp_unknown_shape_raises():
     with pytest.raises(ValueError):
-        apply_shape_mask(np.zeros((4, 4, 3), np.uint8), "star")
+        frame_stamp(np.zeros((4, 4, 3), np.uint8), "star", (0, 0, 0))
 
 
 def test_snap_vertical_straightens_near_vertical_edges():

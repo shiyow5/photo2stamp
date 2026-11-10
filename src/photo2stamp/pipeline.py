@@ -82,6 +82,8 @@ class StampConfig:
             raise ValueError(f"night must be one of {NIGHT_MODES}")
         if self.crop not in CROPS:
             raise ValueError(f"crop must be one of {CROPS}")
+        if self.crop == "after" and self.shape == "rect":
+            raise ValueError('crop="after" needs shape "circle" or "rounded"')
         if self.smoother not in SMOOTHERS:
             raise ValueError(f"smoother must be one of {SMOOTHERS}")
         if min(self.l0_lambda, self.line_sigma, self.line_threshold, self.line_min_length, self.line_width) < 0:
@@ -293,8 +295,9 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
     y, x, side = (0, 0, 0)
     if cfg.crop == "after":  # cut the stamp out of the finished full-photo art
         y, x, side = square_window(img)
-        flat, labels = flat[y : y + side, x : x + side], labels[y : y + side, x : x + side]
+        flat, labels = flat[y : y + side, x : x + side].copy(), labels[y : y + side, x : x + side].copy()
         used = colors[np.unique(labels)]
+        shapes = [sh for sh in shapes if _overlaps(sh.points, x, y, side)]  # keep the SVG small
         h = w = side
     ring_color, paper = _frame_colors(used, cfg.palette)
     out = frame_stamp(flat, cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper)
@@ -302,6 +305,12 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
         shapes, (h, w), cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper, overlay=overlay, offset=(x, y)
     )
     return StampResult(out, svg, labels, used)
+
+
+def _overlaps(points: np.ndarray, x: int, y: int, side: int) -> bool:
+    """Whether a polygon's bounding box touches the square window at (x, y)."""
+    (x0, y0), (x1, y1) = points.min(axis=0), points.max(axis=0)
+    return bool(x1 >= x and x0 < x + side and y1 >= y and y0 < y + side)
 
 
 def _stretch_contrast(image: np.ndarray, low: float = 2, high: float = 98) -> np.ndarray:
