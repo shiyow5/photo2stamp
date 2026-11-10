@@ -65,8 +65,21 @@ NATURAL_PALETTE = Palette(name=NATURAL, tones=(), sky="", accents=(), far="")
 # Hue anchors (Lab hue angle, degrees): red, orange, yellow, green, teal, blue, sky blue, purple.
 # Measured skies in the examples sit at 245..272 deg; 280 rendered them lavender.
 _HUE_ANCHORS = np.radians([30, 60, 88, 135, 190, 230, 262, 320])
-_NEUTRAL_CHROMA = 7.0  # below this a color is treated as grey (shadowed leaves are ~9)
-_MUTED, _VIVID = 40.0, 64.0  # output chroma for muted / vivid colors
+# Dull colors use olive (115) instead of yellow: a dull yellow in a photo is nearly always
+# foliage (conifers measure ~94 deg), while real yellow (signs, lamps) is saturated.
+_DULL_HUE_ANCHORS = np.radians([30, 60, 115, 135, 190, 230, 262, 320])
+_DULL_CHROMA = 20.0  # a hard switch on purpose: the olive/yellow split needs one rule
+_VIVID_INPUT = 35.0  # photo chroma above which a color counts as vivid (signs, lamps, flowers)
+# Output chroma follows the photo's chroma (x gain, capped): a faint tint in a photo is
+# mostly the light (blue skylight in shadows, overcast sky, glass) and must stay faint.
+# The first _TINT_FLOOR of chroma is treated as noise (white balance, haze) and removed.
+_CHROMA_GAIN = 3.5
+_TINT_FLOOR = 6.0
+_CHROMA_CAP = 64.0
+_CHROMA_STEP = 12.0  # output chroma is snapped to this step so near-equal colors merge
+# Below this lightness hues are unreliable (lighting, noise): chroma fades to 30%.
+_SHADOW_L = (5.0, 25.0)
+_NIGHT_SHADOW_L = (10.0, 50.0)  # night: fade longer and deeper (no maroon night sky)
 _L_RANGE = (34.0, 95.0)  # output lightness range: light enough for ink outlines to show
 _COLOR_L_MAX = 78.0  # max lightness of chromatic colors
 _L_STEP = 6.0  # lightness is snapped to this step so near-equal tones merge
@@ -190,32 +203,77 @@ def _equalized_lightness(L: np.ndarray, weights: np.ndarray | None, l_range: tup
     return (lo + below * (hi - lo)).astype(np.float32)
 
 
+def _max_chroma(L: np.ndarray, C: np.ndarray, h: np.ndarray) -> np.ndarray:
+    """Largest chroma <= C (per color) that stays inside sRGB at lightness L."""
+    out = C.astype(np.float32).copy()
+    for _ in range(25):
+        lab = np.stack([L, out * np.cos(h), out * np.sin(h)], axis=1).astype(np.float32)
+        rgb = cv2.cvtColor(lab.reshape(-1, 1, 3), cv2.COLOR_Lab2BGR)  # clips to 0..1
+        back = cv2.cvtColor(rgb, cv2.COLOR_BGR2Lab).reshape(-1, 3)
+        outside = np.linalg.norm(back - lab, axis=1) > 1.0
+        if not outside.any():
+            break
+        out = np.where(outside, out * 0.93, out)
+    else:  # near black / white no chroma fits: fall back to grey rather than a clipped hue
+        out = np.where(outside, 0.0, out)
+    return out
+
+
+# Lightness a vivid color may give up to keep its chroma; one unit of L costs one unit of C.
+_GAMUT_L_DROPS = (0.0, 4.0, 8.0, 12.0)
+
+
+def _fit_gamut(
+    L: np.ndarray, C: np.ndarray, h: np.ndarray, may_darken: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bring each color inside sRGB without a hue shift (clipping would turn light blue
+    into cyan). Colors in `may_darken` (vivid in the photo) may get slightly darker when
+    that keeps much more chroma; others (e.g. a pale sky) keep their lightness."""
+    cand_l = np.stack([np.where(may_darken, np.maximum(L - d, 0.0), L) for d in _GAMUT_L_DROPS])
+    cand_c = np.stack([_max_chroma(lv, C, h) for lv in cand_l])
+    score = cand_c - np.array(_GAMUT_L_DROPS)[:, None]
+    best = score.argmax(axis=0)
+    idx = np.arange(len(L))
+    return cand_l[best, idx], cand_c[best, idx]
+
+
+def _snap_hue(hue: np.ndarray, anchors: np.ndarray) -> np.ndarray:
+    """Nearest anchor angle (radians) for each hue."""
+    diff = np.abs((hue[:, None] - anchors[None, :] + np.pi) % (2 * np.pi) - np.pi)
+    return anchors[diff.argmin(axis=1)]
+
+
 def natural_colors(
     centers_lab: np.ndarray, weights: np.ndarray | None = None, l_range: tuple[float, float] | None = None
 ) -> np.ndarray:
     """Stylize cluster colors while keeping what makes things recognizable: their hue.
 
     Sky stays blue and trees stay green, but every hue is snapped to one of a few
-    anchors, saturation is set to one of two levels (muted / vivid), and lightness is
-    spread over a fixed range (half photo lightness, half area-equalized) in clear steps.
-    Greys stay grey. Returns a new (K,3) uint8 BGR array.
+    anchors, saturation follows the photo's (boosted, in steps; faint tints stay grey)
+    and lightness is spread over a fixed range (half photo lightness, half
+    area-equalized) in clear steps. Colors are fitted into sRGB without hue shifts.
+    Returns a new (K,3) uint8 BGR array.
     """
     c = np.asarray(centers_lab, np.float32)
     L, a, b = c[:, 0], c[:, 1], c[:, 2]
     chroma = np.hypot(a, b)
     hue = np.arctan2(b, a)
-    diff = np.abs((hue[:, None] - _HUE_ANCHORS[None, :] + np.pi) % (2 * np.pi) - np.pi)
-    snapped = _HUE_ANCHORS[diff.argmin(axis=1)]
-    out_c = np.where(chroma < _NEUTRAL_CHROMA, 3.0, np.where(chroma >= 35.0, _VIVID, _MUTED))
-    out_h = np.where(chroma < _NEUTRAL_CHROMA, np.radians(70), snapped)  # greys get a warm paper tint
+    snapped = np.where(chroma < _DULL_CHROMA, _snap_hue(hue, _DULL_HUE_ANCHORS), _snap_hue(hue, _HUE_ANCHORS))
+    night = l_range is not None and l_range[1] < 80
+    dark_lo, dark_hi = _NIGHT_SHADOW_L if night else _SHADOW_L
+    shadow = np.clip((L - dark_lo) / (dark_hi - dark_lo), 0.15 if night else 0.3, 1.0)
+    out_c = np.minimum(np.maximum(chroma - _TINT_FLOOR, 0.0) * _CHROMA_GAIN * shadow, _CHROMA_CAP)
+    out_c = np.round(out_c / _CHROMA_STEP) * _CHROMA_STEP
+    grey = out_c == 0  # chroma at or below about _TINT_FLOOR + 2.5
+    out_c = np.where(grey, 3.0, out_c)
+    out_h = np.where(grey, np.radians(70), snapped)  # greys get a warm paper tint
 
     lo, hi = l_range or _L_RANGE
     stretched = lo + (L - L.min()) / max(float(L.max() - L.min()), 1e-6) * (hi - lo) if len(L) > 1 else L
     out_l = 0.5 * stretched + 0.5 * _equalized_lightness(L, weights, (lo, hi))
     out_l = np.clip(np.round(out_l / _L_STEP) * _L_STEP, lo, hi)
     # very light colors fall outside sRGB and get washed out: only greys may go near white
-    out_l = np.where(chroma < _NEUTRAL_CHROMA, out_l, np.minimum(out_l, _COLOR_L_MAX))
-    if l_range is not None and l_range[1] < 80:  # night range: dark colors stay muted (no maroon night sky)
-        out_c = out_c * np.clip((L - 10.0) / 40.0, 0.15, 1.0)
+    out_l = np.where(grey, out_l, np.minimum(out_l, _COLOR_L_MAX))
+    out_l, out_c = _fit_gamut(out_l, out_c, out_h, may_darken=chroma >= _VIVID_INPUT)
     lab = np.stack([out_l, out_c * np.cos(out_h), out_c * np.sin(out_h)], axis=1)
     return lab_to_bgr(lab)
