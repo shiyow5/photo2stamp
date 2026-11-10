@@ -59,3 +59,15 @@ def test_natural_circle_stamp_uses_fixed_paper_color(city_image):
     s = out.shape[0]
     gap_px = out[s // 2, int(s * 0.08), :3]  # inside the ring, in the paper gap
     assert tuple(int(v) for v in gap_px) == hex_to_bgr(PAPER)
+
+
+def test_natural_sky_hue_is_blue_not_purple():
+    # measured sky of examples/free/castle.jpg (Lab hue about -88 deg)
+    b, g, r = natural_colors(_lab((70, 1.3, -41.7)))[0].astype(int)
+    assert b > r + 40 and g > r and r < 150  # lavender (r ~170) is not sky blue
+
+
+def test_natural_dark_colors_are_desaturated():
+    # a brownish night sky must not turn maroon
+    b, g, r = natural_colors(_lab((12, 8, 10), (60, 0, 0)))[0].astype(int)
+    assert max(b, g, r) - min(b, g, r) < 25

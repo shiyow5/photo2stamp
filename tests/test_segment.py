@@ -213,3 +213,19 @@ def test_extract_accents_skips_patches_touching_the_top_edge():
     centers = np.array([[50, 0, 0]], np.float32)
     _, new_centers = extract_accents(to_lab(img), labels, centers, chroma=28, min_area=50)
     assert new_centers.shape[0] == 1
+
+
+def test_quantize_chroma_weight_separates_muted_green_from_grey():
+    from photo2stamp.segment import to_lab
+
+    img = np.zeros((60, 120, 3), np.uint8)
+    img[:, :40] = (100, 108, 100)  # grey road
+    img[:, 40:80] = (88, 120, 88)  # muted green tree, same lightness
+    img[:, 80:] = (230, 230, 230)  # white wall
+    plain, _ = quantize(img, k=2, seed=0)
+    weighted, centers = quantize(img, k=2, seed=0, chroma_weight=4.0)
+    assert plain[30, 20] == plain[30, 60]  # lightness wins: green merged with grey
+    assert weighted[30, 20] != weighted[30, 60]  # chroma weighting splits them
+    green = centers[weighted[30, 60]]
+    lab = to_lab(img[:1, 40:41]).reshape(3)
+    assert abs(green[1] - lab[1]) < 3  # centers are returned in plain Lab units

@@ -21,12 +21,21 @@ from .segment import (
     to_lab,
     upscale_labels,
 )
+from .lines import clean_lines, dog_lines, draw_lines, light_spots, lines_svg
 from .vectorize import SHAPES, frame_stamp, labels_to_shapes, render_png, shapes_to_svg
 
 
 TONE_MAPPINGS = ("area", "rank")
-WORK_SIZE_CALM, WORK_SIZE_BUSY = 400, 260
-PAPER = "#F6F1E7"  # paper color for the gap inside the stamp ring (natural palette)  # auto work size for calm / busy photos
+WORK_SIZE_CALM, WORK_SIZE_BUSY = 500, 400
+# auto work size for calm / busy photos (above)
+PAPER = "#F6F1E7"  # paper color for the gap inside the stamp ring (natural palette)
+INK = "#26221F"  # outline color on light fills
+LIGHT_INK = "#F3DFA2"  # night mode: lamp-colored outlines on dark fills
+NIGHT_LUMA = 45  # photos with a median luma below this are drawn in night mode
+NIGHT_L_RANGE = (10.0, 62.0)  # night mode keeps fills dark
+NIGHT_MODES = ("auto", "on", "off")
+LINE_SIZE = 600  # long side of the image the outlines are detected on
+SMOOTHERS = ("l0", "meanshift")
 _DENSITY_CALM, _DENSITY_BUSY = 0.07, 0.25  # edge density of a calm seascape / a street of trees
 
 
@@ -35,9 +44,18 @@ class StampConfig:
     max_size: int = 800  # long side in px after resize (0 = keep original size)
     work_size: int = 0  # long side of the image used for segmentation; 0 = auto from detail
     colors: int = 8  # k-means clusters before palette mapping
-    smooth: int = 1  # edge-preserving smoothing passes (on the work image)
+    chroma_weight: float = 2.0  # weight of hue/chroma vs lightness in k-means (hue makes things recognizable)
+    smoother: str = "l0"  # "l0" (L0 gradient minimization, Xu et al. 2011) or "meanshift"
+    l0_lambda: float = 0.04  # L0 smoothing strength; larger = flatter regions
+    smooth: int = 1  # mean-shift smoothing passes (smoother="meanshift")
+    lines: bool = True  # draw DoG outlines over the flat regions
+    night: str = "auto"  # "auto" (by photo brightness), "on" or "off": dark fills + light outlines
+    line_sigma: float = 2.0  # outline scale (Gaussian sigma at 600 px); larger = only big structures
+    line_threshold: float = 0.012  # DoG response needed for a line; larger = fewer lines
+    line_min_length: float = 0.07  # drop line fragments shorter than this fraction of the long side
+    line_width: float = 1.5  # outline width in px at 600 px
     majority: int = 3  # majority-filter window in work-image px; larger = blockier shapes
-    min_region: float = 0.004  # regions smaller than this fraction of the image are merged
+    min_region: float = 0.002  # regions smaller than this fraction of the image are merged
     simplify: float = 0.006  # polygon simplification tolerance as a fraction of the diagonal
     snap_deg: float = 12.0  # edges this close to vertical are made exactly vertical (0 = off)
     palette: str = "natural"  # "natural" (photo hues, stylized), a preset name, or "original"
@@ -58,6 +76,12 @@ class StampConfig:
             raise ValueError(f"tone_mapping must be one of {TONE_MAPPINGS}")
         if self.shape not in SHAPES:
             raise ValueError(f"shape must be one of {SHAPES}")
+        if self.night not in NIGHT_MODES:
+            raise ValueError(f"night must be one of {NIGHT_MODES}")
+        if self.smoother not in SMOOTHERS:
+            raise ValueError(f"smoother must be one of {SMOOTHERS}")
+        if min(self.l0_lambda, self.line_sigma, self.line_threshold, self.line_min_length, self.line_width) < 0:
+            raise ValueError("l0_lambda and line_* settings must be >= 0")
         if min(self.max_size, self.work_size, self.smooth, self.majority, self.snap_deg) < 0:
             raise ValueError("max_size, work_size, smooth, majority and snap_deg must be >= 0")
         if self.ring < 0 or self.ring_gap < 0 or self.ring + self.ring_gap >= 0.5:
@@ -159,15 +183,27 @@ def crop_square(image: np.ndarray, focus_gain: float = 1.2) -> np.ndarray:
     return image[offset : offset + s, :].copy()
 
 
+def _smooth(small: np.ndarray, cfg: StampConfig) -> np.ndarray:
+    # l0Smooth fails on images only a few px wide; mean-shift handles those
+    if cfg.smoother == "l0" and hasattr(cv2, "ximgproc") and min(small.shape[:2]) >= 8:
+        return cv2.ximgproc.l0Smooth(small, None, cfg.l0_lambda, 2.0)
+    return smooth(small, cfg.smooth)
+
+
+def is_night(image: np.ndarray) -> bool:
+    """A photo is a night shot when most of it is dark (median luma below NIGHT_LUMA)."""
+    gray = cv2.cvtColor(image[..., :3], cv2.COLOR_BGR2GRAY)
+    return float(np.median(gray)) < NIGHT_LUMA
+
+
 def _segment(
-    small: np.ndarray, texture: np.ndarray, cfg: StampConfig, n_colors: int
+    smoothed: np.ndarray, texture: np.ndarray, cfg: StampConfig, n_colors: int, night: bool = False
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Cluster, clean and classify the small working image. Returns (labels, BGR colors)."""
-    sh, sw = small.shape[:2]
+    """Cluster, clean and classify the smoothed working image. Returns (labels, BGR colors)."""
+    sh, sw = smoothed.shape[:2]
     min_area = int(cfg.min_region * sh * sw)
-    smoothed = smooth(small, cfg.smooth)
     lab = to_lab(smoothed)
-    labels, centers = quantize(smoothed, n_colors, cfg.seed)
+    labels, centers = quantize(smoothed, n_colors, cfg.seed, cfg.chroma_weight)
     window = cfg.majority | 1 if cfg.majority > 1 else 1
     labels = majority_filter(labels, centers.shape[0], size=window, iterations=2)
     n_base = centers.shape[0]
@@ -179,12 +215,19 @@ def _segment(
     if cfg.detect_sky:
         labels, centers, sky_label = extract_sky(labels, centers, texture=texture, lab=lab)
         sky = frozenset() if sky_label is None else frozenset({sky_label})
-        if sky_label is not None and cfg.detect_far:
+        palette = get_palette(cfg.palette)
+        # the far silhouette exists to give fixed palettes a distant-skyline color; with
+        # photo hues (natural/original) it only adds patches (e.g. on a distant sea)
+        uses_fixed_palette = palette is not None and bool(palette.tones)
+        if sky_label is not None and cfg.detect_far and uses_fixed_palette:
             labels, centers, far_label = extract_far(labels, centers, sky_label, cfg.far_delta, lab=lab)
             far = frozenset() if far_label is None else frozenset({far_label})
 
     weights = np.bincount(labels.ravel(), minlength=centers.shape[0]) if cfg.tone_mapping == "area" else None
-    colors = assign_colors(centers, get_palette(cfg.palette), sky, cfg.accent_chroma, weights, far_labels=far)
+    l_range = NIGHT_L_RANGE if night else None
+    colors = assign_colors(
+        centers, get_palette(cfg.palette), sky, cfg.accent_chroma, weights, far_labels=far, l_range=l_range
+    )
     labels, colors, old_to_new = _unify_by_color(labels, colors)
     keep = frozenset(int(old_to_new[i]) for i in accent_ids)
     return merge_small_regions(labels, min_area, keep=keep), colors
@@ -215,16 +258,54 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
     small = resize_long_side(img, work)
     sh, sw = small.shape[:2]
     texture = cv2.resize(texture_map(img), (sw, sh), interpolation=cv2.INTER_AREA)
-    small_labels, colors = _segment(small, texture, cfg, cfg.colors)
+    smoothed = _smooth(small, cfg)
+    night = cfg.night == "on" or (cfg.night == "auto" and is_night(img))
+    small_labels, colors = _segment(smoothed, texture, cfg, cfg.colors, night)
 
     labels = upscale_labels(small_labels, (h, w), len(colors)) if (sh, sw) != (h, w) else small_labels
     shapes = labels_to_shapes(labels, colors, cfg.simplify * float(np.hypot(h, w)), cfg.snap_deg)
     flat = render_png(shapes, (h, w), base=colors[labels])
     used = colors[np.unique(labels)]
+
+    overlay = ""
+    if cfg.lines and night:
+        # outlines on a night photo become a maze; the lit windows are what you recognise
+        mask = light_spots(resize_long_side(img, LINE_SIZE), (h, w))
+        ink = hex_to_bgr(LIGHT_INK)
+        overlay = lines_svg(flat, mask, ink, "dark")
+        flat = draw_lines(flat, mask, ink, "dark")
+    elif cfg.lines:
+        mask = _outline_mask(img, (h, w), cfg)
+        ink, on = (hex_to_bgr(LIGHT_INK), "dark") if night else (hex_to_bgr(INK), "light")
+        overlay = lines_svg(flat, mask, ink, on)
+        flat = draw_lines(flat, mask, ink, on)
     if cfg.shape == "rect":
-        return StampResult(flat, shapes_to_svg(shapes, (h, w)), labels, used)
+        return StampResult(flat, shapes_to_svg(shapes, (h, w), overlay=overlay), labels, used)
 
     ring_color, paper = _frame_colors(used, cfg.palette)
     out = frame_stamp(flat, cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper)
-    svg = shapes_to_svg(shapes, (h, w), cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper)
+    svg = shapes_to_svg(shapes, (h, w), cfg.shape, ring_color, cfg.ring, cfg.ring_gap, paper, overlay=overlay)
     return StampResult(out, svg, labels, used)
+
+
+def _stretch_contrast(image: np.ndarray, low: float = 2, high: float = 98) -> np.ndarray:
+    """Stretch the 2nd..98th percentile to the full range so that low-contrast (night)
+    photos still have edges strong enough for smoothing and DoG to keep."""
+    lo, hi = np.percentile(image, [low, high])
+    if hi - lo < 1:
+        return image.copy()
+    return np.clip((image.astype(np.float32) - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+
+
+def _outline_mask(img: np.ndarray, size: tuple[int, int], cfg: StampConfig) -> np.ndarray:
+    """DoG outlines found on a LINE_SIZE copy of the photo (smoothed the same way as the
+    regions), enlarged smoothly to the output size. Lines need more resolution than the
+    color regions: at the small work size windows and building edges disappear."""
+    h, w = size
+    base = _smooth(_stretch_contrast(resize_long_side(img, LINE_SIZE)), cfg)
+    sh, sw = base.shape[:2]
+    small = dog_lines(base, max(0.5, cfg.line_sigma * max(sh, sw) / 600.0), cfg.line_threshold)
+    small = clean_lines(small, int(cfg.line_min_length * max(sh, sw)), 1)
+    big = cv2.resize(small.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR) > 0.35
+    width = max(1, int(round(cfg.line_width * max(h, w) / 600.0)))
+    return clean_lines(big, 1, width)

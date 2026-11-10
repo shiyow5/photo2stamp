@@ -21,7 +21,7 @@ def test_edge_density_busy_is_higher_than_flat():
 
 def test_auto_work_size_shrinks_for_detailed_photos():
     assert auto_work_size(0.05) > auto_work_size(0.15) > auto_work_size(0.30)
-    assert 64 <= auto_work_size(1.0) and auto_work_size(0.0) <= 400
+    assert 64 <= auto_work_size(1.0) and auto_work_size(0.0) <= 600
 
 
 def test_texture_map_shape_and_range():

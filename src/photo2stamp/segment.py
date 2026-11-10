@@ -66,14 +66,22 @@ def to_lab(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image.astype(np.float32) / 255.0, cv2.COLOR_BGR2Lab)
 
 
-def quantize(image: np.ndarray, k: int, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
-    """K-means in Lab space. Returns (labels HxW int32, centers Kx3 float32 Lab)."""
-    lab = to_lab(image).reshape(-1, 3)
+def quantize(
+    image: np.ndarray, k: int, seed: int = 0, chroma_weight: float = 1.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """K-means in Lab space. Returns (labels HxW int32, centers Kx3 float32 Lab).
+
+    chroma_weight > 1 scales a/b before clustering, so hue differences (green tree vs
+    grey road of the same lightness) count more than lightness differences. Centers are
+    returned in plain Lab units.
+    """
+    scale = np.array([1.0, chroma_weight, chroma_weight], np.float32)
+    lab = to_lab(image).reshape(-1, 3) * scale
     rng = np.random.default_rng(seed)
     n = lab.shape[0]
     k = max(1, min(k, n))  # k-means needs at least k samples
     if n < 2 or k == 1:  # cv2.kmeans returns malformed centers for a single sample
-        return np.zeros(image.shape[:2], np.int32), lab.mean(axis=0, keepdims=True).astype(np.float32)
+        return np.zeros(image.shape[:2], np.int32), (lab.mean(axis=0, keepdims=True) / scale).astype(np.float32)
     sample = lab[rng.choice(n, size=min(n, _KMEANS_SAMPLE), replace=False)]
 
     cv2.setRNGSeed(seed)
@@ -89,7 +97,7 @@ def quantize(image: np.ndarray, k: int, seed: int = 0) -> tuple[np.ndarray, np.n
         closer = d < best
         best[closer] = d[closer]
         labels[closer] = i
-    return labels.reshape(image.shape[:2]), centers
+    return labels.reshape(image.shape[:2]), (centers / scale).astype(np.float32)
 
 
 def majority_filter(labels: np.ndarray, n_labels: int, size: int = 7, iterations: int = 2) -> np.ndarray:

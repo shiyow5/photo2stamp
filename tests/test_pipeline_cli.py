@@ -143,3 +143,14 @@ def test_cli_continues_after_processing_error(tmp_path, city_image, monkeypatch,
     assert code == 1
     assert "x.png" in capsys.readouterr().err
     assert (tmp_path / "o" / "y.png").exists()
+
+
+def test_natural_palette_skips_far_silhouette(monkeypatch, city_image):
+    import photo2stamp.pipeline as pl
+
+    called = []
+    monkeypatch.setattr(pl, "extract_far", lambda *a, **k: called.append(1) or (a[0], a[1], None))
+    stylize(city_image, StampConfig(max_size=0, palette="natural"))
+    assert not called
+    stylize(city_image, StampConfig(max_size=0, palette="teal"))
+    assert called

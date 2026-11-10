@@ -1,0 +1,64 @@
+"""Night mode: dark photos keep dark fills and get light (lamp-colored) outlines."""
+
+import numpy as np
+import pytest
+
+from photo2stamp import StampConfig, stylize
+from photo2stamp.lines import draw_lines
+from photo2stamp.palette import hex_to_bgr, natural_colors
+from photo2stamp.pipeline import LIGHT_INK, is_night
+
+
+def _night_city():
+    rng = np.random.default_rng(0)
+    img = np.full((240, 320, 3), 18, np.uint8)  # night sky
+    for x in range(20, 300, 50):
+        img[100:, x : x + 30] = 45  # dark towers
+        img[110:230:12, x + 5 : x + 25 : 8] = (90, 200, 240)  # lit windows
+    return np.clip(img + rng.normal(0, 3, img.shape), 0, 255).astype(np.uint8)
+
+
+def test_is_night_detects_dark_photos():
+    assert is_night(_night_city())
+    assert not is_night(np.full((50, 50, 3), 150, np.uint8))
+
+
+def test_natural_colors_respects_lightness_range():
+    lab = np.array([[5, 0, 0], [50, 0, 0], [95, 0, 0]], np.float32)
+    out = natural_colors(lab, l_range=(10.0, 60.0)).astype(float)
+    luma = out @ np.array([0.114, 0.587, 0.299])
+    assert luma.max() < 170  # L 60 is roughly luma 150
+
+
+def test_draw_lines_on_dark_only():
+    fill = np.zeros((10, 20, 3), np.uint8)
+    fill[:, 10:] = 230
+    out = draw_lines(fill, np.ones((10, 20), bool), ink=(200, 220, 240), on="dark")
+    assert tuple(out[5, 2]) == (200, 220, 240)
+    assert tuple(out[5, 15]) == (230, 230, 230)
+
+
+def test_night_photo_gets_light_outlines():
+    out = stylize(_night_city(), StampConfig(max_size=0)).image
+    assert (out.reshape(-1, 3) == np.array(hex_to_bgr(LIGHT_INK), np.uint8)).all(axis=1).any()
+
+
+def test_night_mode_can_be_forced_off():
+    out = stylize(_night_city(), StampConfig(max_size=0, night="off")).image
+    assert not (out.reshape(-1, 3) == np.array(hex_to_bgr(LIGHT_INK), np.uint8)).all(axis=1).any()
+
+
+def test_night_mode_validation():
+    with pytest.raises(ValueError):
+        StampConfig(night="sometimes")
+
+
+def test_light_spots_marks_bright_points_only():
+    from photo2stamp.lines import light_spots
+
+    img = np.full((100, 100, 3), 20, np.uint8)
+    img[40:44, 40:44] = 230  # a lit window
+    img[0:100, 90:100] = 60  # dim wall, not a light
+    spots = light_spots(img, size=(100, 100))
+    assert spots[39:46, 39:46].any()
+    assert not spots[50, 95] and not spots[10, 10]

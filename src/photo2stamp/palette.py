@@ -62,11 +62,12 @@ NATURAL = "natural"
 # A marker palette: colors are derived from the photo's own hues (see natural_colors).
 NATURAL_PALETTE = Palette(name=NATURAL, tones=(), sky="", accents=(), far="")
 
-# Hue anchors (Lab hue angle, degrees): red, orange, yellow, green, teal, blue, sky, purple
-_HUE_ANCHORS = np.radians([30, 60, 88, 135, 190, 245, 280, 330])
+# Hue anchors (Lab hue angle, degrees): red, orange, yellow, green, teal, blue, sky blue, purple.
+# Measured skies in the examples sit at 245..272 deg; 280 rendered them lavender.
+_HUE_ANCHORS = np.radians([30, 60, 88, 135, 190, 230, 262, 320])
 _NEUTRAL_CHROMA = 10.0  # below this a color is treated as grey
 _MUTED, _VIVID = 30.0, 55.0  # output chroma for muted / vivid colors
-_L_RANGE = (18.0, 92.0)  # output lightness range
+_L_RANGE = (34.0, 95.0)  # output lightness range: light enough for ink outlines to show
 _L_STEP = 6.0  # lightness is snapped to this step so near-equal tones merge
 
 
@@ -126,6 +127,7 @@ def assign_colors(
     accent_chroma: float = 35.0,
     weights: np.ndarray | None = None,
     far_labels: frozenset[int] = frozenset(),
+    l_range: tuple[float, float] | None = None,
 ) -> np.ndarray:
     """Map each cluster center (Lab) to a flat BGR color. Returns a new (K,3) uint8 array.
 
@@ -138,7 +140,7 @@ def assign_colors(
     if palette is None:
         return lab_to_bgr(centers)
     if palette.name == NATURAL:
-        return natural_colors(centers, weights)
+        return natural_colors(centers, weights, l_range)
 
     k = centers.shape[0]
     tones = np.array([hex_to_bgr(c) for c in palette.tones], np.uint8)
@@ -176,8 +178,8 @@ def _tone_indices(order: list[int], n_tones: int, weights: np.ndarray | None) ->
     return [min(n_tones - 1, int(m * n_tones)) for m in mids]
 
 
-def _equalized_lightness(L: np.ndarray, weights: np.ndarray | None) -> np.ndarray:
-    lo, hi = _L_RANGE
+def _equalized_lightness(L: np.ndarray, weights: np.ndarray | None, l_range: tuple[float, float]) -> np.ndarray:
+    lo, hi = l_range
     if weights is None or len(L) < 2:
         span = float(L.max() - L.min())
         return np.full_like(L, (lo + hi) / 2) if span < 1e-6 else lo + (L - L.min()) / span * (hi - lo)
@@ -187,7 +189,9 @@ def _equalized_lightness(L: np.ndarray, weights: np.ndarray | None) -> np.ndarra
     return (lo + below * (hi - lo)).astype(np.float32)
 
 
-def natural_colors(centers_lab: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
+def natural_colors(
+    centers_lab: np.ndarray, weights: np.ndarray | None = None, l_range: tuple[float, float] | None = None
+) -> np.ndarray:
     """Stylize cluster colors while keeping what makes things recognizable: their hue.
 
     Sky stays blue and trees stay green, but every hue is snapped to one of a few
@@ -204,9 +208,10 @@ def natural_colors(centers_lab: np.ndarray, weights: np.ndarray | None = None) -
     out_c = np.where(chroma < _NEUTRAL_CHROMA, 3.0, np.where(chroma >= 35.0, _VIVID, _MUTED))
     out_h = np.where(chroma < _NEUTRAL_CHROMA, np.radians(70), snapped)  # greys get a warm paper tint
 
-    lo, hi = _L_RANGE
+    lo, hi = l_range or _L_RANGE
     stretched = lo + (L - L.min()) / max(float(L.max() - L.min()), 1e-6) * (hi - lo) if len(L) > 1 else L
-    out_l = 0.5 * stretched + 0.5 * _equalized_lightness(L, weights)
+    out_l = 0.5 * stretched + 0.5 * _equalized_lightness(L, weights, (lo, hi))
     out_l = np.clip(np.round(out_l / _L_STEP) * _L_STEP, lo, hi)
+    out_c = out_c * np.clip((L - 10.0) / 40.0, 0.15, 1.0)  # colors that were dark in the photo stay muted
     lab = np.stack([out_l, out_c * np.cos(out_h), out_c * np.sin(out_h)], axis=1)
     return lab_to_bgr(lab)

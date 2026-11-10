@@ -31,6 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ring-gap", type=float, default=d.ring_gap, help="gap between ring and art")
     p.add_argument("--max-size", type=int, default=d.max_size, help="resize long side; 0 keeps size")
     p.add_argument("--accent-chroma", type=float, default=d.accent_chroma, help="saturation threshold for accents")
+    p.add_argument("--night", default=d.night, choices=["auto", "on", "off"],
+                   help="night mode: dark fills with light outlines (default: auto by brightness)")
+    p.add_argument("--no-lines", action="store_true", help="no outlines, flat color only")
     p.add_argument("--no-sky", action="store_true", help="disable sky detection")
     p.add_argument("--no-far", action="store_true", help="disable distant-skyline silhouette")
     p.add_argument("--far-delta", type=float, default=d.far_delta, help="max color distance to sky for far")
@@ -58,6 +61,8 @@ def _config(args: argparse.Namespace) -> StampConfig:
         ring_gap=args.ring_gap,
         palette=args.palette,
         detect_sky=not args.no_sky,
+        night=args.night,
+        lines=not args.no_lines,
         detect_far=not args.no_far,
         far_delta=args.far_delta,
         accent_chroma=args.accent_chroma,

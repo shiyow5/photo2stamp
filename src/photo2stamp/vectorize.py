@@ -105,8 +105,11 @@ def shapes_to_svg(
     ring: float = 0.0,
     gap: float = 0.0,
     paper: tuple[int, int, int] = (255, 255, 255),
+    overlay: str = "",
 ) -> str:
     """Serialize shapes as an SVG document (one <path> per region), with an optional stamp frame.
+
+    `overlay` (e.g. the outline group) is drawn over the regions, inside the stamp clip.
 
     `ring` and `gap` are fractions of the stamp size, as in frame_stamp.
     """
@@ -122,6 +125,8 @@ def shapes_to_svg(
         d = "M" + " L".join(f"{x + 0.5:g} {y + 0.5:g}" for x, y in s.points) + " Z"
         c = bgr_to_hex(s.color)
         body.append(f'<path d="{d}" fill="{c}" stroke="{c}" stroke-width="1" stroke-linejoin="round"/>')
+    if overlay:
+        body.append(overlay)
     body.append("</g>")
     if shape != "rect" and ring_color is not None and ring > 0:
         side = min(w, h)
