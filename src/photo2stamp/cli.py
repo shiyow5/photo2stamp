@@ -43,6 +43,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-white-balance", action="store_true",
                    help="keep the photo's color cast (by default the light's color is removed)")
     p.add_argument("--no-lines", action="store_true", help="no outlines, flat color only")
+    p.add_argument("--no-details", action="store_true",
+                   help="do not draw small colored details (carvings, flowers) as spots")
     p.add_argument("--line-width", type=float, default=d.line_width,
                    help="outline width in px at 600 px (default: %(default)s)")
     p.add_argument("--line-threshold", type=float, default=d.line_threshold,
@@ -91,6 +93,7 @@ def _config(args: argparse.Namespace) -> StampConfig:
         detect_sky=not args.no_sky,
         night=args.night,
         lines=not args.no_lines,
+        details=not args.no_details,
         white_balance=not args.no_white_balance,
         detect_far=not args.no_far,
         far_delta=args.far_delta,

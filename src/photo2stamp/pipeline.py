@@ -7,7 +7,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .palette import assign_colors, get_palette, hex_to_bgr
+from .details import details_svg, find_details, paint_details
+from .palette import NATURAL, assign_colors, get_palette, hex_to_bgr
 from .segment import (
     edge_density,
     extract_accents,
@@ -58,6 +59,7 @@ class StampConfig:
     l0_lambda: float = 0.04  # L0 smoothing strength; larger = flatter regions
     smooth: int = 1  # mean-shift smoothing passes (smoother="meanshift")
     lines: bool = True  # draw DoG outlines over the flat regions
+    details: bool = True  # natural palette: small colored details (carvings, flowers) as spots
     night: str = "auto"  # "auto" (by photo brightness), "on" or "off": dark fills + light outlines
     line_sigma: float = 2.0  # outline scale (Gaussian sigma at 600 px); larger = only big structures
     line_threshold: float = 0.012  # DoG response needed for a line; larger = fewer lines
@@ -294,16 +296,21 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
     used = colors[np.unique(labels)]
 
     overlay = ""
+    if cfg.details and cfg.palette == NATURAL and not night:
+        spots, spot_colors = find_details(resize_long_side(img, LINE_SIZE), (h, w))
+        if len(spot_colors):
+            flat = paint_details(flat, spots, spot_colors)
+            overlay = details_svg(spots, spot_colors)
     if cfg.lines and night:
         # outlines on a night photo become a maze; the lit windows are what you recognise
         mask = light_spots(resize_long_side(img, LINE_SIZE), (h, w))
         ink = hex_to_bgr(LIGHT_INK)
-        overlay = lines_svg(flat, mask, ink, "dark")
+        overlay += lines_svg(flat, mask, ink, "dark")
         flat = draw_lines(flat, mask, ink, "dark")
     elif cfg.lines:
         mask = _outline_mask(img, (h, w), cfg)
         ink, on = (hex_to_bgr(LIGHT_INK), "dark") if night else (hex_to_bgr(INK), "light")
-        overlay = lines_svg(flat, mask, ink, on)
+        overlay += lines_svg(flat, mask, ink, on)
         lamps = _dusk_lamps(img, flat) if cfg.night == "auto" and not night else None
         flat = draw_lines(flat, mask, ink, on)
         if lamps is not None and lamps.any():

@@ -138,6 +138,10 @@ def merge_small_regions(
     return labels[rows, cols]
 
 
+ACCENT_HUE_SECTOR = 45.0  # vivid pixels are grouped per hue sector of this width (deg)
+ACCENT_MAX_AREA = 0.12  # a vivid patch larger than this fraction is a main region, not an accent
+
+
 def extract_accents(
     lab: np.ndarray,
     labels: np.ndarray,
@@ -145,27 +149,37 @@ def extract_accents(
     chroma: float,
     min_area: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Give small but vivid regions (signs, lights) their own cluster.
+    """Give small but vivid regions (signs, lights, peppers on rice) their own cluster.
 
-    K-means tends to swallow small saturated patches into a large neutral cluster.
-    Every connected patch with chroma >= `chroma` and area >= `min_area` becomes a new
-    label whose center is the patch's mean Lab color. Returns new arrays.
+    K-means tends to swallow small saturated patches into a large cluster. Vivid pixels
+    (chroma >= `chroma`) are grouped per hue sector, so red strips lying on yellow rice
+    are not averaged into mustard. Every connected patch with area in [`min_area`,
+    ACCENT_MAX_AREA of the frame] becomes a new label whose center is the patch's mean
+    Lab color. Larger vivid areas are left to k-means. Returns new arrays.
     """
-    vivid = (np.hypot(lab[..., 1], lab[..., 2]) >= chroma).astype(np.uint8)
-    vivid = cv2.morphologyEx(vivid, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    # close gaps left by text and frames so a sign becomes one solid patch
-    vivid = cv2.morphologyEx(vivid, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-    count, comp, stats, _ = cv2.connectedComponentsWithStats(vivid, connectivity=8)
+    c = np.hypot(lab[..., 1], lab[..., 2])
+    hue = np.degrees(np.arctan2(lab[..., 2], lab[..., 1])) % 360
+    sector = (hue // ACCENT_HUE_SECTOR).astype(np.int32)
+    max_area = ACCENT_MAX_AREA * labels.size
     new_labels = labels.copy()
     extra: list[np.ndarray] = []
-    for i in range(1, count):
-        if stats[i, cv2.CC_STAT_AREA] < max(1, min_area):
-            continue
-        if stats[i, cv2.CC_STAT_TOP] == 0:  # vivid patches at the top edge are sky, not signs
-            continue
-        mask = comp == i
-        new_labels[mask] = centers.shape[0] + len(extra)
-        extra.append(lab[mask].mean(axis=0))
+    for sec in np.unique(sector[c >= chroma]):
+        vivid = ((c >= chroma) & (sector == sec)).astype(np.uint8)
+        vivid = cv2.morphologyEx(vivid, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        # close gaps left by text and frames so a sign becomes one solid patch
+        vivid = cv2.morphologyEx(vivid, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        count, comp, stats, _ = cv2.connectedComponentsWithStats(vivid, connectivity=8)
+        for i in range(1, count):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < max(1, min_area) or area > max_area:
+                continue
+            if stats[i, cv2.CC_STAT_TOP] == 0:  # vivid patches at the top edge are sky, not signs
+                continue
+            mask = (comp == i) & (new_labels < centers.shape[0])  # first sector to claim a pixel keeps it
+            if not mask.any():
+                continue
+            new_labels[mask] = centers.shape[0] + len(extra)
+            extra.append(lab[mask].mean(axis=0))
     if not extra:
         return new_labels, centers.copy()
     return new_labels, np.vstack([centers, np.array(extra, np.float32)]).astype(np.float32)

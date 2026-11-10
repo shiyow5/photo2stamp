@@ -229,3 +229,32 @@ def test_quantize_chroma_weight_separates_muted_green_from_grey():
     green = centers[weighted[30, 60]]
     lab = to_lab(img[:1, 40:41]).reshape(3)
     assert abs(green[1] - lab[1]) < 3  # centers are returned in plain Lab units
+
+
+def _paella():
+    """Yellow rice in a dark pan with thin red pepper strips (the hues must not mix)."""
+    import cv2
+
+    rng = np.random.default_rng(0)
+    img = np.full((240, 320, 3), 225, np.uint8)
+    cv2.circle(img, (160, 120), 110, (40, 40, 40), -1)
+    cv2.circle(img, (160, 120), 100, (30, 200, 235), -1)  # saffron rice (BGR)
+    for i in range(6):
+        a = i * np.pi / 3
+        p0 = (int(160 + 20 * np.cos(a)), int(120 + 20 * np.sin(a)))
+        p1 = (int(160 + 85 * np.cos(a)), int(120 + 85 * np.sin(a)))
+        cv2.line(img, p0, p1, (40, 40, 210), 7)  # red pepper
+    return np.clip(img + rng.normal(0, 4, img.shape), 0, 255).astype(np.uint8)
+
+
+def test_vivid_patches_of_different_hues_stay_apart():
+    from photo2stamp import StampConfig, stylize
+    from photo2stamp.segment import to_lab
+
+    out = stylize(_paella(), StampConfig(max_size=0, lines=False)).image
+    lab = to_lab(out).reshape(-1, 3)
+    hue = np.degrees(np.arctan2(lab[:, 2], lab[:, 1])) % 360
+    chroma = np.hypot(lab[:, 1], lab[:, 2])
+    red = (chroma > 30) & ((hue < 45) | (hue > 340))
+    yellow = (chroma > 30) & (hue > 70) & (hue < 110)
+    assert red.mean() > 0.01 and yellow.mean() > 0.2

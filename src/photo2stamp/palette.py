@@ -243,6 +243,35 @@ def _snap_hue(hue: np.ndarray, anchors: np.ndarray) -> np.ndarray:
     return anchors[diff.argmin(axis=1)]
 
 
+def _stylized_chroma_hue(lab: np.ndarray, night: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Output chroma, hue (radians) and grey mask of the natural palette for Lab colors."""
+    L, a, b = lab[:, 0], lab[:, 1], lab[:, 2]
+    chroma = np.hypot(a, b)
+    hue = np.arctan2(b, a)
+    snapped = np.where(chroma < _DULL_CHROMA, _snap_hue(hue, _DULL_HUE_ANCHORS), _snap_hue(hue, _HUE_ANCHORS))
+    dark_lo, dark_hi = _NIGHT_SHADOW_L if night else _SHADOW_L
+    shadow = np.clip((L - dark_lo) / (dark_hi - dark_lo), 0.15 if night else 0.3, 1.0)
+    out_c = np.minimum(np.maximum(chroma - _TINT_FLOOR, 0.0) * _CHROMA_GAIN * shadow, _CHROMA_CAP)
+    out_c = np.round(out_c / _CHROMA_STEP) * _CHROMA_STEP
+    grey = out_c == 0  # chroma at or below about _TINT_FLOOR + 2.5
+    out_c = np.where(grey, 3.0, out_c)
+    out_h = np.where(grey, np.radians(70), snapped)  # greys get a warm paper tint
+    return out_c, out_h, grey
+
+
+DETAIL_L = (40.0, 78.0)  # lightness range of detail spots: visible on light and dark fills
+
+
+def detail_colors(means_lab: np.ndarray) -> np.ndarray:
+    """Natural-palette colors for small details: same hue and chroma rules, the photo's
+    own lightness (clipped), no area equalization. Returns (K,3) uint8 BGR."""
+    c = np.asarray(means_lab, np.float32).reshape(-1, 3)
+    out_c, out_h, _ = _stylized_chroma_hue(c)
+    out_l = np.clip(c[:, 0], *DETAIL_L)
+    out_l, out_c = _fit_gamut(out_l, out_c, out_h, may_darken=np.hypot(c[:, 1], c[:, 2]) >= _VIVID_INPUT)
+    return lab_to_bgr(np.stack([out_l, out_c * np.cos(out_h), out_c * np.sin(out_h)], axis=1))
+
+
 def natural_colors(
     centers_lab: np.ndarray, weights: np.ndarray | None = None, l_range: tuple[float, float] | None = None
 ) -> np.ndarray:
@@ -255,18 +284,10 @@ def natural_colors(
     Returns a new (K,3) uint8 BGR array.
     """
     c = np.asarray(centers_lab, np.float32)
-    L, a, b = c[:, 0], c[:, 1], c[:, 2]
-    chroma = np.hypot(a, b)
-    hue = np.arctan2(b, a)
-    snapped = np.where(chroma < _DULL_CHROMA, _snap_hue(hue, _DULL_HUE_ANCHORS), _snap_hue(hue, _HUE_ANCHORS))
+    L = c[:, 0]
+    chroma = np.hypot(c[:, 1], c[:, 2])
     night = l_range is not None and l_range[1] < 80
-    dark_lo, dark_hi = _NIGHT_SHADOW_L if night else _SHADOW_L
-    shadow = np.clip((L - dark_lo) / (dark_hi - dark_lo), 0.15 if night else 0.3, 1.0)
-    out_c = np.minimum(np.maximum(chroma - _TINT_FLOOR, 0.0) * _CHROMA_GAIN * shadow, _CHROMA_CAP)
-    out_c = np.round(out_c / _CHROMA_STEP) * _CHROMA_STEP
-    grey = out_c == 0  # chroma at or below about _TINT_FLOOR + 2.5
-    out_c = np.where(grey, 3.0, out_c)
-    out_h = np.where(grey, np.radians(70), snapped)  # greys get a warm paper tint
+    out_c, out_h, grey = _stylized_chroma_hue(c, night)
 
     lo, hi = l_range or _L_RANGE
     stretched = lo + (L - L.min()) / max(float(L.max() - L.min()), 1e-6) * (hi - lo) if len(L) > 1 else L
