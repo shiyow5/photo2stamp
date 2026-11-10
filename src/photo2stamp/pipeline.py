@@ -23,6 +23,7 @@ from .segment import (
 )
 from .lines import clean_lines, dog_lines, draw_lines, light_spots, lines_svg
 from .vectorize import SHAPES, frame_stamp, labels_to_shapes, render_png, shapes_to_svg
+from .whitebalance import white_balance
 
 
 TONE_MAPPINGS = ("area", "rank")
@@ -43,6 +44,7 @@ _DENSITY_CALM, _DENSITY_BUSY = 0.07, 0.25  # edge density of a calm seascape / a
 @dataclass(frozen=True)
 class StampConfig:
     max_size: int = 800  # long side in px after resize (0 = keep original size)
+    white_balance: bool = True  # remove the color cast of the light first (Gray-Edge)
     work_size: int = 0  # long side of the image used for segmentation; 0 = auto from detail
     colors: int = 8  # k-means clusters before palette mapping
     chroma_weight: float = 2.0  # weight of hue/chroma vs lightness in k-means (hue makes things recognizable)
@@ -258,6 +260,8 @@ def _frame_colors(colors: np.ndarray, palette_name: str) -> tuple[tuple[int, int
 def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult:
     cfg = config or StampConfig()
     img = to_bgr_uint8(image)
+    if cfg.white_balance:
+        img = white_balance(img)
     if cfg.shape != "rect" and cfg.crop == "before":
         img = crop_square(img)
     img = resize_long_side(img, cfg.max_size)
