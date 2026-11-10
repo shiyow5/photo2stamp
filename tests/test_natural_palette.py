@@ -168,3 +168,19 @@ def test_natural_moderate_colors_stay_colorful():
     # measured sea of examples/free/lighthouse.jpg: a real color, not a lighting tint
     _, chroma, _ = _out_lch([_lch(36.7, 11.4, 226), (70, 0, 0)])
     assert chroma[0] >= 20
+
+
+def test_shadowed_foliage_next_to_leaves_turns_green():
+    # dark bluish patches (leaves in shade, lit by the sky) inside a green canopy
+    import cv2
+
+    from photo2stamp import StampConfig, stylize
+
+    rng = np.random.default_rng(0)
+    img = np.full((240, 320, 3), (60, 150, 80), np.uint8)  # sunlit green leaves (BGR)
+    for cx, cy in ((80, 80), (220, 100), (150, 180)):
+        cv2.circle(img, (cx, cy), 35, (50, 42, 30), -1)  # shade: dark, slightly blue
+    img = np.clip(img + rng.normal(0, 3, img.shape), 0, 255).astype(np.uint8)
+    out = stylize(img, StampConfig(max_size=0, lines=False, details=False, white_balance=False)).image
+    b, g, r = out[180, 150].astype(int)
+    assert g > b + 8 and g > r + 8

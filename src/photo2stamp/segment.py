@@ -299,3 +299,47 @@ def _split_off_sky_outliers(
         return labels, centers
     new_labels = np.where(off, centers.shape[0], labels).astype(np.int32)
     return new_labels, np.vstack([centers, lab[off].mean(axis=0, keepdims=True)]).astype(np.float32)
+
+
+SHADE_MAX_L = 35.0  # clusters darker than this may be foliage in shade
+SHADE_MAX_CHROMA = 15.0  # ... when nearly colorless in the photo (their tint is skylight)
+FOLIAGE_HUES = (100.0, 170.0)  # Lab hues of leaves
+FOLIAGE_MIN_CHROMA = 12.0
+SHADE_GREEN_SHARE = 0.5  # share of a cluster's border that must be leaves
+SHADE_TINT = 0.6  # the shade takes this fraction of its leafy neighbours' a/b
+
+
+def tint_shaded_foliage(labels: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    """Return centers where dark, nearly grey clusters surrounded by leaves take a darker
+    version of the leaves' hue. Leaves in shade are lit by the blue sky and measure dark
+    blue-grey, so a canopy turns into grey and blue blobs; a person sees dark green."""
+    out = centers.copy()
+    chroma = np.hypot(centers[:, 1], centers[:, 2])
+    hue = np.degrees(np.arctan2(centers[:, 2], centers[:, 1])) % 360
+    leafy = (hue >= FOLIAGE_HUES[0]) & (hue <= FOLIAGE_HUES[1]) & (chroma >= FOLIAGE_MIN_CHROMA)
+    if not leafy.any():
+        return out
+    cand = np.flatnonzero((centers[:, 0] < SHADE_MAX_L) & (chroma < SHADE_MAX_CHROMA))
+    if len(cand) == 0:
+        return out
+    # k-means often splits one shaded patch into several near-identical dark clusters, so
+    # the candidates are judged together: each connected shaded area by its own border
+    union = np.isin(labels, cand).astype(np.uint8)
+    count, comp = cv2.connectedComponents(union, connectivity=8)
+    kernel = np.ones((5, 5), np.uint8)
+    shaded = np.zeros(labels.shape, bool)
+    green_ab = []
+    for k in range(1, count):
+        mask = (comp == k).astype(np.uint8)
+        neigh = labels[(cv2.dilate(mask, kernel) > 0) & (mask == 0)]
+        if neigh.size and leafy[neigh].mean() >= SHADE_GREEN_SHARE:
+            shaded |= mask.astype(bool)
+            green_ab.append(centers[neigh[leafy[neigh]], 1:].mean(axis=0))
+    if not green_ab:
+        return out
+    tint = SHADE_TINT * np.mean(green_ab, axis=0)
+    for i in cand:
+        own = labels == i
+        if shaded[own].mean() >= 0.5:
+            out[i, 1:] = tint
+    return out

@@ -19,6 +19,7 @@ from .segment import (
     quantize,
     smooth,
     texture_map,
+    tint_shaded_foliage,
     to_lab,
     upscale_labels,
 )
@@ -267,6 +268,8 @@ def _segment(
             labels, centers, far_label = extract_far(labels, centers, sky_label, cfg.far_delta, lab=lab)
             far = frozenset() if far_label is None else frozenset({far_label})
 
+    if cfg.palette == NATURAL and not night:
+        centers = tint_shaded_foliage(labels, centers)
     weights = np.bincount(labels.ravel(), minlength=centers.shape[0]) if cfg.tone_mapping == "area" else None
     l_range = NIGHT_L_RANGE if night else None
     colors = assign_colors(
