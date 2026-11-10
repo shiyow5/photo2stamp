@@ -69,3 +69,29 @@ def test_lines_svg_keeps_thin_lines_and_dots_with_a_stroke():
     svg = lines_svg(fill, mask, ink=(30, 30, 30))
     assert svg.count("M") == 2  # both kept
     assert 'stroke-width="1"' in svg and 'stroke-linecap="round"' in svg
+
+
+def _cloudy_sky():
+    import cv2
+
+    rng = np.random.default_rng(0)
+    img = np.zeros((240, 320, 3), np.uint8)
+    img[:] = (225, 190, 150)  # blue sky (BGR)
+    cloud = np.zeros((240, 320), np.float32)
+    cv2.ellipse(cloud, (150, 60), (70, 25), 0, 0, 360, 1.0, -1)
+    cloud = cv2.GaussianBlur(cloud, (0, 0), 3)[..., None]
+    img = (img * (1 - cloud) + np.array([245, 245, 245]) * cloud).astype(np.uint8)
+    img[160:] = (70, 110, 90)  # ground
+    img[120:160, 40:120] = (60, 60, 60)  # a building on the horizon
+    return np.clip(img + rng.normal(0, 2, img.shape), 0, 255).astype(np.uint8)
+
+
+def test_clouds_get_no_outline():
+    from photo2stamp import StampConfig, stylize
+    from photo2stamp.palette import hex_to_bgr
+    from photo2stamp.pipeline import INK
+
+    out = stylize(_cloudy_sky(), StampConfig(max_size=0, details=False)).image
+    ink = (np.abs(out.astype(int) - np.array(hex_to_bgr(INK))).sum(axis=2) < 30)
+    assert ink[20:100, 60:240].sum() == 0  # around the cloud
+    assert ink[110:170].sum() > 50  # the building and horizon still have outlines

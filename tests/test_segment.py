@@ -258,3 +258,17 @@ def test_vivid_patches_of_different_hues_stay_apart():
     red = (chroma > 30) & ((hue < 45) | (hue > 340))
     yellow = (chroma > 30) & (hue > 70) & (hue < 110)
     assert red.mean() > 0.01 and yellow.mean() > 0.2
+
+
+def test_region_reaching_the_bottom_is_not_sky():
+    from photo2stamp.segment import extract_sky
+
+    labels = np.zeros((100, 100), np.int32)
+    labels[:, 60:] = 1  # a plain wall from top to bottom (close-up background)
+    labels[:40, :60] = 2  # real sky over the left part
+    centers = np.array([[40, 0, 0], [80, 0, 0], [85, -5, -20]], np.float32)
+    texture = np.zeros((100, 100), np.float32)
+    texture[:, :60][40:] = 1.0
+    new_labels, _, sky = extract_sky(labels, centers, texture=texture)
+    assert sky is not None
+    assert new_labels[10, 30] == sky and new_labels[10, 80] != sky

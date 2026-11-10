@@ -36,6 +36,9 @@ LIGHT_INK = "#F3DFA2"  # night mode: lamp-colored outlines on dark fills
 NIGHT_LUMA = 45  # photos with a median luma below this are drawn in night mode
 NIGHT_L_RANGE = (10.0, 62.0)  # night mode keeps fills dark
 NIGHT_MODES = ("auto", "on", "off")
+BRIGHT_SKY_L = 55.0  # a sky this light (Lab L) is daytime: its clouds get no outlines
+SKYLINE_MARGIN = 0.04  # fraction of the height below the lowest sky pixel still counted as sky
+SOFT_EDGE_GRAD = 150.0  # Sobel magnitude (0..255 image) below which an edge is soft (cloud rim)
 NIGHT_BRIGHT_LUMA = 120  # pixels brighter than this are lit (windows, lamps, a lit dish)
 NIGHT_MAX_BLOB = 0.05  # night: no lit area covers more than this fraction (measured 0.005 vs 0.13)
 DUSK_LAMP_LUMA = 200  # day mode: point lights this bright in dark parts become lamp dots
@@ -224,8 +227,10 @@ def is_night(image: np.ndarray) -> bool:
 
 def _segment(
     smoothed: np.ndarray, texture: np.ndarray, cfg: StampConfig, n_colors: int, night: bool = False
-) -> tuple[np.ndarray, np.ndarray]:
-    """Cluster, clean and classify the smoothed working image. Returns (labels, BGR colors)."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Cluster, clean and classify the smoothed working image.
+
+    Returns (labels, BGR colors, mask of a bright (daytime) sky; all False if none)."""
     sh, sw = smoothed.shape[:2]
     min_area = int(cfg.min_region * sh * sw)
     lab = to_lab(smoothed)
@@ -254,9 +259,11 @@ def _segment(
     colors = assign_colors(
         centers, get_palette(cfg.palette), sky, cfg.accent_chroma, weights, far_labels=far, l_range=l_range
     )
+    bright_sky = bool(sky) and float(centers[next(iter(sky)), 0]) >= BRIGHT_SKY_L
+    sky_mask = np.isin(labels, list(sky)) if bright_sky else np.zeros(labels.shape, bool)
     labels, colors, old_to_new = _unify_by_color(labels, colors)
     keep = frozenset(int(old_to_new[i]) for i in accent_ids)
-    return merge_small_regions(labels, min_area, keep=keep), colors
+    return merge_small_regions(labels, min_area, keep=keep), colors, sky_mask
 
 
 def _frame_colors(colors: np.ndarray, palette_name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
@@ -288,7 +295,7 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
     texture = cv2.resize(texture_map(img), (sw, sh), interpolation=cv2.INTER_AREA)
     smoothed = _smooth(small, cfg)
     night = cfg.night == "on" or (cfg.night == "auto" and is_night(img))
-    small_labels, colors = _segment(smoothed, texture, cfg, cfg.colors, night)
+    small_labels, colors, small_sky = _segment(smoothed, texture, cfg, cfg.colors, night)
 
     labels = upscale_labels(small_labels, (h, w), len(colors)) if (sh, sw) != (h, w) else small_labels
     shapes = labels_to_shapes(labels, colors, cfg.simplify * float(np.hypot(h, w)), cfg.snap_deg)
@@ -308,7 +315,7 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
         overlay += lines_svg(flat, mask, ink, "dark")
         flat = draw_lines(flat, mask, ink, "dark")
     elif cfg.lines:
-        mask = _outline_mask(img, (h, w), cfg)
+        mask = _outline_mask(img, (h, w), cfg) & ~_soft_sky_edges(img, small_sky, (h, w))
         ink, on = (hex_to_bgr(LIGHT_INK), "dark") if night else (hex_to_bgr(INK), "light")
         overlay += lines_svg(flat, mask, ink, on)
         lamps = _dusk_lamps(img, flat) if cfg.night == "auto" and not night else None
@@ -339,6 +346,29 @@ def _overlaps(points: np.ndarray, x: int, y: int, side: int) -> bool:
     """Whether a polygon's bounding box touches the square window at (x, y)."""
     (x0, y0), (x1, y1) = points.min(axis=0), points.max(axis=0)
     return bool(x1 >= x and x0 < x + side and y1 >= y and y0 < y + side)
+
+
+def _soft_sky_edges(img: np.ndarray, sky: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """Mask of soft edges (cloud rims) above the skyline of a daytime sky.
+
+    Above the skyline (the lowest sky pixel) mostly clouds and things
+    standing against the sky are found. Cloud rims are soft: the brightness changes
+    gently, while a spire or a roof edge is sharp. Lines on soft rims are dropped."""
+    h, w = size
+    if not sky.any():
+        return np.zeros((h, w), bool)
+    sh = sky.shape[0]
+    # a wide cloud cuts a deep notch into the sky above it, so one skyline (the lowest
+    # sky pixel) is used for the whole width; sharp edges above it keep their lines
+    skyline = int(np.nonzero(sky.any(axis=1))[0].max()) + int(SKYLINE_MARGIN * sh)  # lines sit beside it
+    above = np.broadcast_to(np.arange(sh)[:, None] <= skyline, sky.shape)
+    above = cv2.resize(above.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+    gray = cv2.cvtColor(resize_long_side(img, LINE_SIZE), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = cv2.GaussianBlur(gray, (0, 0), 1.0)
+    grad = np.hypot(cv2.Sobel(gray, cv2.CV_32F, 1, 0), cv2.Sobel(gray, cv2.CV_32F, 0, 1))
+    grad = cv2.dilate(grad, np.ones((7, 7), np.uint8))  # a line sits beside its edge
+    soft = cv2.resize((grad < SOFT_EDGE_GRAD).astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+    return above & soft.astype(bool)
 
 
 def _dusk_lamps(img: np.ndarray, flat: np.ndarray) -> np.ndarray:

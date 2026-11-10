@@ -233,6 +233,9 @@ def extract_far(
     return new_labels, new_centers, far_label
 
 
+SKY_MAX_BOTTOM = 0.9  # sky never reaches the bottom of the frame (a plain backdrop does)
+
+
 def extract_sky(
     labels: np.ndarray,
     centers: np.ndarray,
@@ -266,6 +269,7 @@ def extract_sky(
             i
             for i in top_ids
             if stats[i, cv2.CC_STAT_AREA] >= min_fraction * h * w
+            and stats[i, cv2.CC_STAT_TOP] + stats[i, cv2.CC_STAT_HEIGHT] <= SKY_MAX_BOTTOM * h
             and (texture is None or float(texture[comp == i].mean()) <= max_texture)
         ]
         if keep:
