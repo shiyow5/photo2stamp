@@ -62,12 +62,19 @@ def majority_filter(labels: np.ndarray, n_labels: int, size: int = 7, iterations
     return out
 
 
-def merge_small_regions(labels: np.ndarray, min_area: int) -> np.ndarray:
-    """Absorb connected regions smaller than min_area into their nearest large neighbour."""
+def merge_small_regions(
+    labels: np.ndarray, min_area: int, keep: frozenset[int] = frozenset()
+) -> np.ndarray:
+    """Absorb connected regions smaller than min_area into their nearest large neighbour.
+
+    Labels in `keep` (e.g. accent colors such as signs) are never absorbed.
+    """
     if min_area <= 1:
         return labels.copy()
     small = np.zeros(labels.shape, bool)
     for lab in np.unique(labels):
+        if int(lab) in keep:
+            continue
         mask = (labels == lab).astype(np.uint8)
         count, comp, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4)
         tiny = np.flatnonzero(stats[1:, cv2.CC_STAT_AREA] < min_area) + 1
@@ -94,6 +101,8 @@ def extract_accents(
     """
     vivid = (np.hypot(lab[..., 1], lab[..., 2]) >= chroma).astype(np.uint8)
     vivid = cv2.morphologyEx(vivid, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    # close gaps left by text and frames so a sign becomes one solid patch
+    vivid = cv2.morphologyEx(vivid, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     count, comp, stats, _ = cv2.connectedComponentsWithStats(vivid, connectivity=8)
     new_labels = labels.copy()
     extra: list[np.ndarray] = []

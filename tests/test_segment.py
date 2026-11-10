@@ -96,3 +96,27 @@ def test_extract_accents_ignores_tiny_specks():
     centers = np.array([[50, 0, 0]], np.float32)
     _, new_centers = extract_accents(to_lab(img), labels, centers, chroma=35, min_area=50)
     assert new_centers.shape[0] == 1
+
+
+def test_merge_small_regions_keeps_protected_labels():
+    labels = np.zeros((40, 40), np.int32)
+    labels[5:7, 5:7] = 2  # tiny accent
+    labels[20:22, 20:22] = 3  # tiny non-accent
+    out = merge_small_regions(labels, min_area=10, keep=frozenset({2}))
+    assert out[5, 5] == 2
+    assert out[20, 20] == 0
+
+
+def test_extract_accents_bridges_text_holes():
+    from photo2stamp.segment import extract_accents, to_lab
+
+    img = np.full((100, 100, 3), 120, np.uint8)
+    img[40:60, 30:70] = (40, 40, 220)  # red billboard
+    img[40:60, 38:40] = 230  # white text strokes split it
+    img[40:60, 50:52] = 230
+    img[40:60, 60:62] = 230
+    labels = np.zeros((100, 100), np.int32)
+    centers = np.array([[50, 0, 0]], np.float32)
+    new_labels, new_centers = extract_accents(to_lab(img), labels, centers, chroma=35, min_area=300)
+    assert new_centers.shape[0] == 2  # one accent cluster, not three fragments
+    assert new_labels[50, 50] == 1  # text stroke inside the sign is filled

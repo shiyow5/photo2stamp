@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 
 from .palette import ORIGINAL, PRESETS
-from .pipeline import StampConfig, stylize
+from .pipeline import TONE_MAPPINGS, StampConfig, stylize
 from .vectorize import SHAPES
 
 
@@ -29,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--accent-chroma", type=float, default=d.accent_chroma, help="saturation threshold for accents")
     p.add_argument("--no-sky", action="store_true", help="disable sky detection")
     p.add_argument("--shape", default=d.shape, choices=SHAPES, help="stamp outline")
+    p.add_argument(
+        "--tone-mapping", default=d.tone_mapping, choices=TONE_MAPPINGS,
+        help="area: spread tones by pixel area (default) / rank: one tone per cluster",
+    )
     p.add_argument("--svg", action="store_true", help="also write an SVG next to the PNG")
     p.add_argument("--seed", type=int, default=d.seed)
     return p
@@ -47,6 +51,7 @@ def _config(args: argparse.Namespace) -> StampConfig:
         detect_sky=not args.no_sky,
         accent_chroma=args.accent_chroma,
         shape=args.shape,
+        tone_mapping=args.tone_mapping,
         seed=args.seed,
     )
 

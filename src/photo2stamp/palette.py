@@ -107,8 +107,15 @@ def assign_colors(
     palette: Palette | None,
     sky_labels: frozenset[int] = frozenset(),
     accent_chroma: float = 35.0,
+    weights: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Map each cluster center (Lab) to a flat BGR color. Returns a new (K,3) uint8 array."""
+    """Map each cluster center (Lab) to a flat BGR color. Returns a new (K,3) uint8 array.
+
+    Neutral clusters are sorted by lightness. Without `weights` each cluster takes the
+    next tone by rank. With `weights` (pixel counts) tones are assigned by the cluster's
+    position in the cumulative area, like histogram equalization, so a dark photo still
+    uses the whole tone range.
+    """
     centers = np.asarray(centers_lab, np.float32)
     if palette is None:
         return lab_to_bgr(centers)
@@ -131,8 +138,17 @@ def assign_colors(
 
     if neutral:
         order = sorted(neutral, key=lambda i: float(centers[i, 0]))
-        n, t = len(order), len(tones)
-        for rank, idx in enumerate(order):
-            tone = round(rank * (t - 1) / (n - 1)) if n > 1 else t // 2
+        for idx, tone in zip(order, _tone_indices(order, len(tones), weights)):
             out[idx] = tones[tone]
     return out
+
+
+def _tone_indices(order: list[int], n_tones: int, weights: np.ndarray | None) -> list[int]:
+    n = len(order)
+    if weights is None or float(np.sum(np.asarray(weights)[order])) <= 0:
+        if n == 1:
+            return [n_tones // 2]
+        return [round(rank * (n_tones - 1) / (n - 1)) for rank in range(n)]
+    w = np.asarray(weights, np.float64)[order]
+    mids = (np.cumsum(w) - w / 2) / w.sum()
+    return [min(n_tones - 1, int(m * n_tones)) for m in mids]

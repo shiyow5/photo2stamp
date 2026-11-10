@@ -60,3 +60,18 @@ def test_assign_colors_does_not_mutate_input():
     before = centers.copy()
     assign_colors(centers, get_palette("mono"))
     np.testing.assert_array_equal(centers, before)
+
+
+def test_assign_colors_area_weighted_spreads_tones_by_area():
+    palette = get_palette("mono")  # 5 tones
+    # three dark clusters cover 90% of the image, one light cluster 10%
+    centers = np.array([[10, 0, 0], [15, 0, 0], [20, 0, 0], [90, 0, 0]], np.float32)
+    weights = np.array([30, 30, 30, 10], np.float64)
+    by_rank = assign_colors(centers, palette)
+    by_area = assign_colors(centers, palette, weights=weights)
+    tones = [hex_to_bgr(t) for t in palette.tones]
+    # by rank the 2nd cluster gets tone 1; by area its midpoint (45%) lands on tone 2
+    assert tuple(by_rank[1]) == tones[1]
+    assert tuple(by_area[1]) == tones[2]
+    assert tuple(by_area[0]) == tones[0]
+    assert tuple(by_area[3]) == tones[-1]
