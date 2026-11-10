@@ -6,6 +6,16 @@
 現在はPOC(概念実証)の段階です。写真の構図をそのまま残し、色と形を単純化します。
 写真から要素を選んで配置し直すような意味的なデフォルメはしません。
 
+## 変換例
+
+左から順に、元写真、`teal`パレット(既定)、`warm`パレット、`mono`パレットを円形に切り抜いたものです。
+
+| 元写真 | teal | warm | mono + circle |
+|---|---|---|---|
+| ![元写真](examples/photo.jpg) | ![teal](examples/photo_teal.png) | ![warm](examples/photo_warm.png) | ![mono circle](examples/photo_mono_circle.png) |
+
+SVG出力の例は[examples/photo_teal.svg](examples/photo_teal.svg)にあります。
+
 ## インストール
 
 ```bash
