@@ -47,7 +47,7 @@ def main() -> int:
     p.add_argument("-o", "--output", type=Path, default=Path("gallery.jpg"))
     p.add_argument("--columns", type=int, default=2)
     p.add_argument("--shape", default="rect")
-    p.add_argument("--palette", default="teal")
+    p.add_argument("--palette", default="natural")
     args = p.parse_args()
 
     config = StampConfig(shape=args.shape, palette=args.palette)

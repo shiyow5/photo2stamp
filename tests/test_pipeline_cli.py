@@ -24,7 +24,7 @@ def test_stylize_output_uses_only_palette_colors(city_image):
 
 
 def test_stylize_paints_sky_and_accent(city_image):
-    result = stylize(city_image, StampConfig(colors=6, max_size=0))
+    result = stylize(city_image, StampConfig(colors=6, max_size=0, palette="teal"))
     palette = get_palette("teal")
     assert tuple(result.image[5, 90]) == hex_to_bgr(palette.sky)
     sign = tuple(result.image[135, 35])

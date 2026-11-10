@@ -86,11 +86,11 @@ def test_stylize_badge_is_square_with_alpha(city_image):
     assert "<circle" in result.svg
 
 
-def test_stylize_auto_detail_gives_fewer_regions_for_busy_input():
+def test_smaller_work_size_gives_fewer_regions():
     busy = np.clip(
         np.full((300, 300, 3), 120, np.int16) + np.random.default_rng(1).integers(-60, 60, (300, 300, 3)), 0, 255
     ).astype(np.uint8)
-    coarse = stylize(busy, StampConfig(max_size=0))
+    coarse = stylize(busy, StampConfig(max_size=0, work_size=80))
     fine = stylize(busy, StampConfig(max_size=0, work_size=300))
     assert coarse.svg.count("<path") < fine.svg.count("<path")
 
@@ -121,18 +121,10 @@ def test_crop_square_follows_the_detailed_side():
     assert sq[:, -30:].std() > 30  # the busy part is inside the crop
 
 
-def test_auto_colors_uses_fewer_colors_for_busy_photos():
-    from photo2stamp.pipeline import auto_colors
-
-    assert auto_colors(0.05) == 6
-    assert auto_colors(0.30) == 4
-    assert auto_colors(0.15) in (4, 5, 6)
-
-
-def test_colors_zero_means_auto_and_one_is_rejected():
-    StampConfig(colors=0)
-    with pytest.raises(ValueError):
-        StampConfig(colors=1)
+def test_colors_below_two_are_rejected():
+    for bad in (0, 1):
+        with pytest.raises(ValueError):
+            StampConfig(colors=bad)
 
 
 @pytest.mark.parametrize(

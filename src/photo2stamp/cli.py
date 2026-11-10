@@ -8,7 +8,7 @@ from pathlib import Path
 
 import cv2
 
-from .palette import ORIGINAL, PRESETS
+from .palette import NATURAL, ORIGINAL, PRESETS
 from .pipeline import TONE_MAPPINGS, StampConfig, stylize
 from .vectorize import SHAPES
 
@@ -18,8 +18,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="photo2stamp", description="Turn photos into flat stamp-style illustrations.")
     p.add_argument("inputs", nargs="+", type=Path, help="input image files")
     p.add_argument("-o", "--out-dir", type=Path, default=Path("out"), help="output directory (default: out)")
-    p.add_argument("--palette", default=d.palette, choices=[*PRESETS, ORIGINAL])
-    p.add_argument("--colors", type=int, default=d.colors, help="color clusters; 0 = auto from detail (default)")
+    p.add_argument("--palette", default=d.palette, choices=[NATURAL, *PRESETS, ORIGINAL])
+    p.add_argument("--colors", type=int, default=d.colors, help="color clusters (default: %(default)s)")
     p.add_argument("--smooth", type=int, default=d.smooth, help="smoothing passes (default: %(default)s)")
     p.add_argument("--majority", type=int, default=d.majority, help="shape blockiness window px (default: %(default)s)")
     p.add_argument("--min-region", type=float, default=d.min_region, help="min region area fraction")

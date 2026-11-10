@@ -25,8 +25,8 @@ from .vectorize import SHAPES, frame_stamp, labels_to_shapes, render_png, shapes
 
 
 TONE_MAPPINGS = ("area", "rank")
-WORK_SIZE_CALM, WORK_SIZE_BUSY = 220, 80  # auto work size for calm / busy photos
-COLORS_CALM, COLORS_BUSY = 6, 4  # auto color count for calm / busy photos
+WORK_SIZE_CALM, WORK_SIZE_BUSY = 400, 260
+PAPER = "#F6F1E7"  # paper color for the gap inside the stamp ring (natural palette)  # auto work size for calm / busy photos
 _DENSITY_CALM, _DENSITY_BUSY = 0.07, 0.25  # edge density of a calm seascape / a street of trees
 
 
@@ -34,13 +34,13 @@ _DENSITY_CALM, _DENSITY_BUSY = 0.07, 0.25  # edge density of a calm seascape / a
 class StampConfig:
     max_size: int = 800  # long side in px after resize (0 = keep original size)
     work_size: int = 0  # long side of the image used for segmentation; 0 = auto from detail
-    colors: int = 0  # k-means clusters before palette mapping; 0 = auto from detail (6..4)
+    colors: int = 8  # k-means clusters before palette mapping
     smooth: int = 1  # edge-preserving smoothing passes (on the work image)
-    majority: int = 5  # majority-filter window in work-image px; larger = blockier shapes
+    majority: int = 3  # majority-filter window in work-image px; larger = blockier shapes
     min_region: float = 0.004  # regions smaller than this fraction of the image are merged
     simplify: float = 0.006  # polygon simplification tolerance as a fraction of the diagonal
     snap_deg: float = 12.0  # edges this close to vertical are made exactly vertical (0 = off)
-    palette: str = "teal"  # preset name or "original"
+    palette: str = "natural"  # "natural" (photo hues, stylized), a preset name, or "original"
     detect_sky: bool = True
     detect_far: bool = True  # paint hazy distant scenery under the sky as one silhouette color
     far_delta: float = 20.0  # max Lab distance from the sky color for a region to count as far
@@ -52,8 +52,8 @@ class StampConfig:
     seed: int = 0
 
     def __post_init__(self) -> None:
-        if self.colors == 1 or self.colors < 0:
-            raise ValueError("colors must be 0 (auto) or >= 2")
+        if self.colors < 2:
+            raise ValueError("colors must be >= 2")
         if self.tone_mapping not in TONE_MAPPINGS:
             raise ValueError(f"tone_mapping must be one of {TONE_MAPPINGS}")
         if self.shape not in SHAPES:
@@ -128,10 +128,6 @@ def auto_work_size(density: float) -> int:
     return int(round(np.interp(density, [_DENSITY_CALM, _DENSITY_BUSY], [WORK_SIZE_CALM, WORK_SIZE_BUSY])))
 
 
-def auto_colors(density: float) -> int:
-    """Fewer colors for busier photos: a poster of a leafy street needs 4 colors, not 8."""
-    return int(round(np.interp(density, [_DENSITY_CALM, _DENSITY_BUSY], [COLORS_CALM, COLORS_BUSY])))
-
 
 def crop_square(image: np.ndarray, focus_gain: float = 1.2) -> np.ndarray:
     """Crop to a square (stamps are round or square), centered on the subject.
@@ -197,10 +193,12 @@ def _segment(
 def _frame_colors(colors: np.ndarray, palette_name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     """(ring, paper): the darkest and lightest colors of the palette (or of the result)."""
     palette = get_palette(palette_name)
-    if palette is not None:
+    if palette is not None and palette.tones:
         return hex_to_bgr(palette.tones[0]), hex_to_bgr(palette.tones[-1])
     lum = colors.astype(np.float32) @ np.array([0.114, 0.587, 0.299], np.float32)
     dark, light = colors[int(lum.argmin())], colors[int(lum.argmax())]
+    if palette is not None:  # natural: a fixed paper color keeps every stamp consistent
+        return tuple(int(c) for c in dark), hex_to_bgr(PAPER)
     return tuple(int(c) for c in dark), tuple(int(c) for c in light)
 
 
@@ -217,7 +215,7 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
     small = resize_long_side(img, work)
     sh, sw = small.shape[:2]
     texture = cv2.resize(texture_map(img), (sw, sh), interpolation=cv2.INTER_AREA)
-    small_labels, colors = _segment(small, texture, cfg, cfg.colors or auto_colors(density))
+    small_labels, colors = _segment(small, texture, cfg, cfg.colors)
 
     labels = upscale_labels(small_labels, (h, w), len(colors)) if (sh, sw) != (h, w) else small_labels
     shapes = labels_to_shapes(labels, colors, cfg.simplify * float(np.hypot(h, w)), cfg.snap_deg)
