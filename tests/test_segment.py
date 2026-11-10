@@ -272,3 +272,35 @@ def test_region_reaching_the_bottom_is_not_sky():
     new_labels, _, sky = extract_sky(labels, centers, texture=texture)
     assert sky is not None
     assert new_labels[10, 30] == sky and new_labels[10, 80] != sky
+
+
+def test_thin_strips_of_another_hue_keep_their_own_accent():
+    # review repro: yellow block with two 4 px green strips
+    from photo2stamp.segment import extract_accents, to_lab
+
+    img = np.full((100, 100, 3), 128, np.uint8)
+    img[30:60, 30:60] = (30, 200, 230)  # yellow
+    img[30:60, 38:42] = (60, 170, 40)  # green strip
+    img[30:60, 50:54] = (60, 170, 40)
+    labels = np.zeros((100, 100), np.int32)
+    new_labels, centers = extract_accents(to_lab(img), labels, np.array([[50, 0, 0]], np.float32), 25, 20)
+    assert new_labels[45, 40] != new_labels[45, 33]
+    hue = lambda c: np.degrees(np.arctan2(c[2], c[1])) % 360  # noqa: E731
+    assert hue(centers[new_labels[45, 33]]) < 110  # yellow is not pulled toward green
+
+
+def test_an_object_across_a_hue_boundary_stays_one_accent():
+    # an orange sign whose hue drifts across 45 deg (a sector edge of the old method)
+    import cv2
+
+    from photo2stamp.segment import extract_accents, to_lab
+
+    lab = np.zeros((100, 100, 3), np.float32)
+    lab[..., 0] = 50
+    hue = np.radians(np.linspace(35, 55, 40))
+    lab[30:60, 30:70, 1] = 50 * np.cos(hue)
+    lab[30:60, 30:70, 2] = 50 * np.sin(hue)
+    bgr = (np.clip(cv2.cvtColor(lab, cv2.COLOR_Lab2BGR), 0, 1) * 255).astype(np.uint8)
+    labels = np.zeros((100, 100), np.int32)
+    _, centers = extract_accents(to_lab(bgr), labels, np.array([[50, 0, 0]], np.float32), 25, 20)
+    assert centers.shape[0] == 2

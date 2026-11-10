@@ -48,9 +48,10 @@ def find_details(image: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray, 
     remap[ids] = np.arange(1, len(ids) + 1)
     spots = remap[comp]
     flat = spots.ravel()
-    sums = np.zeros((len(ids) + 1, 3), np.float64)
-    np.add.at(sums, flat, lab.reshape(-1, 3))
-    means = sums[1:] / np.bincount(flat, minlength=len(ids) + 1)[1:, None]
+    n = len(ids) + 1
+    counts = np.bincount(flat, minlength=n)[1:, None]
+    means = np.stack([np.bincount(flat, weights=lab[..., c].ravel(), minlength=n)[1:] for c in range(3)], axis=1)
+    means = means / counts
     big = cv2.resize(spots.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST).astype(np.int32)
     return big, detail_colors(means.astype(np.float32))
 
@@ -65,11 +66,32 @@ def paint_details(flat: np.ndarray, spots: np.ndarray, colors: np.ndarray) -> np
     return out
 
 
+def _label_boxes(spots: np.ndarray, n: int) -> list[tuple[int, int, int, int] | None]:
+    """Bounding box (y0, y1, x0, x1) of each label 1..n in one pass (index 0 unused)."""
+    ys, xs = np.nonzero(spots)
+    lab = spots[ys, xs]
+    boxes: list[tuple[int, int, int, int] | None] = [None] * (n + 1)
+    if len(lab) == 0:
+        return boxes
+    order = np.argsort(lab, kind="stable")
+    lab, ys, xs = lab[order], ys[order], xs[order]
+    starts = np.flatnonzero(np.r_[True, lab[1:] != lab[:-1]])
+    ends = np.r_[starts[1:], len(lab)]
+    for s0, e0 in zip(starts, ends):
+        boxes[int(lab[s0])] = (int(ys[s0:e0].min()), int(ys[s0:e0].max()) + 1, int(xs[s0:e0].min()), int(xs[s0:e0].max()) + 1)
+    return boxes
+
+
 def details_svg(spots: np.ndarray, colors: np.ndarray) -> str:
     """SVG group with one path per detail color."""
     parts = ['<g id="details">']
+    boxes = _label_boxes(spots, len(colors))
     for k, color in enumerate(colors, start=1):
-        contours, _ = cv2.findContours((spots == k).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if boxes[k] is None:
+            continue
+        y0, y1, x0, x1 = boxes[k]
+        sub = (spots[y0:y1, x0:x1] == k).astype(np.uint8)
+        contours, _ = cv2.findContours(sub, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE, offset=(int(x0), int(y0)))
         d = " ".join("M" + " L".join(f"{x + 0.5:g} {y + 0.5:g}" for x, y in c.reshape(-1, 2)) + " Z" for c in contours)
         if d:
             hx = bgr_to_hex(color)

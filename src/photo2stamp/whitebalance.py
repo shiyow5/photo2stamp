@@ -87,7 +87,7 @@ def _cast_chroma(light: np.ndarray) -> float:
     return float(np.hypot(lab[1], lab[2]))
 
 
-def white_balance(image: np.ndarray, strength: float = 1.0, max_shift: float = MAX_SHIFT) -> np.ndarray:
+def white_balance(image: np.ndarray, max_shift: float = MAX_SHIFT) -> np.ndarray:
     """Return a copy of `image` (BGR uint8) with the light's color cast removed.
 
     Casts up to `max_shift` (Lab chroma) are removed in full; stronger ones only by
@@ -95,12 +95,12 @@ def white_balance(image: np.ndarray, strength: float = 1.0, max_shift: float = M
     """
     img = image[..., :3]
     light = estimate_illuminant(img)
-    if np.allclose(light, 1.0, atol=1e-3) or strength <= 0:
+    if np.allclose(light, 1.0, atol=1e-3):
         return img.copy()
     if light[0] < light[2] and _warm_sky(img):  # warm light under a warm sky is the mood
         return img.copy()
     cast = _cast_chroma(light)
-    t = strength * (1.0 if cast <= max_shift else max_shift / cast)
+    t = 1.0 if cast <= max_shift else max_shift / cast
     gains = (1.0 / light) ** t
     gains = gains / float(_LUMA_BGR @ gains)  # keep brightness
     return _to_srgb(_to_linear(img) * gains.astype(np.float32))
