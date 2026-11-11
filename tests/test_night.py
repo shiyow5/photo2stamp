@@ -73,18 +73,60 @@ def test_dark_table_with_a_bright_dish_is_not_night():
     assert not is_night(img)
 
 
-def test_lamp_dots_in_dark_parts_of_a_day_scene():
-    # dusk: bright sky, dark river with bright lamp reflections -> dots on the dark part
-    from photo2stamp.lines import _luma
-
+def test_day_scene_gets_no_lamp_dots():
+    # sun glints in the shade of a tree look like dusk lamps; day photos get no lamp dots
     rng = np.random.default_rng(0)
     img = np.full((200, 300, 3), 35, np.uint8)
-    img[:90] = (200, 170, 150)  # bright evening sky (not night overall)
+    img[:90] = (200, 170, 150)  # bright sky (not night overall)
     for x in range(20, 280, 40):
-        img[150:154, x : x + 4] = 250  # lamp reflections on the dark river
+        img[150:154, x : x + 4] = 250  # bright points in the dark half
     img = np.clip(img + rng.normal(0, 2, img.shape), 0, 255).astype(np.uint8)
     assert not is_night(img)
     out = stylize(img, StampConfig(max_size=0)).image
     lamp = np.array(hex_to_bgr(LIGHT_INK), float)
     river = out[120:190].astype(float)
-    assert (np.abs(river - lamp).sum(axis=2) < 30).sum() > 20
+    assert (np.abs(river - lamp).sum(axis=2) < 30).sum() == 0
+
+
+def test_dense_windows_become_spaced_dots():
+    # a tower of lit windows: one dot per window would be hundreds of specks
+    import cv2
+
+    from photo2stamp.lines import LIGHT_GAP, light_spots
+
+    img = np.full((400, 400, 3), 15, np.uint8)
+    windows = 0
+    for y in range(20, 380, 3):
+        for x in range(100, 300, 3):
+            img[y : y + 2, x : x + 2] = 230
+            windows += 1
+    spots = light_spots(img, size=(400, 400))
+    count, _, _, centers = cv2.connectedComponentsWithStats(spots.astype(np.uint8))
+    pts = centers[1:]
+    assert 20 < len(pts) < windows / 3
+    d = np.hypot(*(pts[:, None] - pts[None]).transpose(2, 0, 1))
+    np.fill_diagonal(d, np.inf)
+    assert d.min() >= LIGHT_GAP * 400 - 1
+
+
+def test_the_larger_light_wins_a_crowded_spot():
+    from photo2stamp.lines import light_spots
+
+    img = np.full((200, 200, 3), 10, np.uint8)
+    img[100:102, 100:102] = 240  # small lamp
+    img[100:108, 104:112] = 240  # big lit window right next to it
+    spots = light_spots(img, size=(200, 200), gap=0.05)  # 10 px: the two are too close
+    ys, xs = np.nonzero(spots)
+    assert abs(xs.mean() - 107.5) < 2  # the dot sits on the big window
+
+
+def test_gap_zero_keeps_every_light():
+    import cv2
+
+    from photo2stamp.lines import light_spots
+
+    img = np.full((200, 200, 3), 10, np.uint8)
+    for x in range(20, 180, 8):
+        img[100:102, x : x + 2] = 240
+    spots = light_spots(img, size=(200, 200), dot=0.001, gap=0.0)
+    assert cv2.connectedComponents(spots.astype(np.uint8))[0] - 1 == 20

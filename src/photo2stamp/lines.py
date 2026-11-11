@@ -46,6 +46,7 @@ def _luma(image: np.ndarray) -> np.ndarray:
 
 
 LIGHT_FILL_LUMA = 200  # light (night-mode) lines are not drawn on fills brighter than this
+LIGHT_GAP = 0.015  # night lights closer than this (fraction of the long side) to a placed dot are left out
 
 
 def _visible(fill: np.ndarray, on: str) -> np.ndarray:
@@ -96,13 +97,15 @@ def light_spots(
     min_luma: float = 150.0,
     percentile: float = 92.0,
     dot: float = 0.006,
-    max_area: float = 1.0,
+    gap: float = LIGHT_GAP,
 ) -> np.ndarray:
     """Night mode: mask of lit windows and lamps, drawn as round dots.
 
     A pixel is a light when it is among the brightest `percentile` of the photo and
-    brighter than `min_luma`. Each light smaller than `max_area` (fraction of the frame)
-    becomes one dot of diameter `dot` x long side.
+    brighter than `min_luma`. Each light becomes one dot of diameter `dot` x long side.
+    A lit tower has hundreds of windows, so lights are placed largest first and one
+    closer than `gap` x long side to a placed dot is left out: dense parts stay denser
+    than lone lamps, but never turn into a field of specks.
     """
     gray = cv2.cvtColor(image[..., :3], cv2.COLOR_BGR2GRAY).astype(np.float32)
     bright = gray >= max(min_luma, float(np.percentile(gray, percentile)))
@@ -111,10 +114,17 @@ def light_spots(
     count, _, stats, centroids = cv2.connectedComponentsWithStats(bright.astype(np.uint8), connectivity=8)
     sy, sx = h / gray.shape[0], w / gray.shape[1]
     radius = max(1, int(round(dot * max(h, w) / 2)))
-    max_px = max_area * gray.size
-    for i in range(1, count):
-        if stats[i, cv2.CC_STAT_AREA] > max_px:
+    centers = centroids[1:] * (sx, sy)
+    order = np.argsort(-stats[1:, cv2.CC_STAT_AREA], kind="stable")
+    min_dist = gap * max(h, w)
+    cell = max(min_dist, 1.0)  # grid of placed dots: only the 3x3 cells around need checking
+    grid: dict[tuple[int, int], list[np.ndarray]] = {}
+    for i in order:
+        p = centers[i]
+        gx, gy = int(p[0] // cell), int(p[1] // cell)
+        near = (q for dx in (-1, 0, 1) for dy in (-1, 0, 1) for q in grid.get((gx + dx, gy + dy), ()))
+        if any(np.hypot(*(q - p)) < min_dist for q in near):
             continue
-        cx, cy = centroids[i]
-        cv2.circle(out, (int(round(cx * sx)), int(round(cy * sy))), radius, 1, -1, lineType=cv2.LINE_8)
+        grid.setdefault((gx, gy), []).append(p)
+        cv2.circle(out, (int(round(p[0])), int(round(p[1]))), radius, 1, -1, lineType=cv2.LINE_8)
     return out.astype(bool)

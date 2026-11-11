@@ -1,6 +1,6 @@
 [project]
 name = "photo2stamp"
-version = "1.1.0"
+version = "1.2.0"
 description = "Turn photos into flat, stamp-style illustrations with classic image processing (no generative AI, CPU only)."
 readme = "README.md"
 license = "MIT"

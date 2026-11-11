@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .details import details_svg, find_details, paint_details
+from .details import details_svg, find_details, paint_details, select_details
 from .palette import NATURAL, assign_colors, get_palette, hex_to_bgr
 from .segment import (
     edge_density,
@@ -23,8 +23,7 @@ from .segment import (
     to_lab,
     upscale_labels,
 )
-from .lines import LIGHT_FILL_LUMA, clean_lines, dog_lines, draw_lines, light_spots, lines_svg
-from .lines import _luma as _fill_luma
+from .lines import clean_lines, dog_lines, draw_lines, light_spots, lines_svg
 from .vectorize import SHAPES, frame_stamp, labels_to_shapes, render_png, shapes_to_svg
 from .whitebalance import white_balance
 
@@ -44,10 +43,6 @@ CLOUD_MIN_LUMA = 110.0  # soft edges are dropped only where the photo is this li
 SOFT_EDGE_GRAD = 150.0  # Sobel magnitude (0..255 image) below which an edge is soft (cloud rim)
 NIGHT_BRIGHT_LUMA = 120  # pixels brighter than this are lit (windows, lamps, a lit dish)
 NIGHT_MAX_BLOB = 0.05  # night: no lit area covers more than this fraction (measured 0.005 vs 0.13)
-DUSK_LAMP_LUMA = 200  # day mode: point lights this bright in dark parts become lamp dots
-DUSK_LAMP_AREA = 0.002  # ... when each is smaller than this fraction of the frame
-DUSK_DARK_LUMA = 70  # ... and the photo around them (blurred) is darker than this
-DUSK_SURROUND_SIGMA = 10.0  # blur (px at LINE_SIZE) that measures the surroundings of a light
 SVG_BASE_EPSILON = 0.75  # px: the SVG base layer follows the label map this closely
 LINE_SIZE = 600  # long side of the image the outlines are detected on
 SMOOTHERS = ("l0", "meanshift")
@@ -262,7 +257,7 @@ def _segment(
     labels = majority_filter(labels, centers.shape[0], size=window, iterations=2)
     n_base = centers.shape[0]
     labels, centers = extract_accents(lab, labels, centers, cfg.accent_chroma, max(1, min_area // 4))
-    accent_ids = range(n_base, centers.shape[0])
+    accent_pixels = labels >= n_base
 
     sky: frozenset[int] = frozenset()
     far: frozenset[int] = frozenset()
@@ -286,9 +281,8 @@ def _segment(
     )
     bright_sky = bool(sky) and float(centers[next(iter(sky)), 0]) >= BRIGHT_SKY_L
     sky_mask = np.isin(labels, list(sky)) if bright_sky else np.zeros(labels.shape, bool)
-    labels, colors, old_to_new = _unify_by_color(labels, colors)
-    keep = frozenset(int(old_to_new[i]) for i in accent_ids)
-    return merge_small_regions(labels, min_area, keep=keep), colors, sky_mask
+    labels, colors, _ = _unify_by_color(labels, colors)
+    return merge_small_regions(labels, min_area, protect=accent_pixels), colors, sky_mask
 
 
 def _frame_colors(colors: np.ndarray, palette_name: str) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
@@ -331,6 +325,7 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
     overlay = ""
     if cfg.details and cfg.palette == NATURAL and not night:
         spots, spot_colors = find_details(resize_long_side(img, LINE_SIZE), (h, w))
+        spots, spot_colors = select_details(spots, spot_colors, flat)
         if len(spot_colors):
             flat = paint_details(flat, spots, spot_colors)
             overlay = details_svg(spots, spot_colors)
@@ -343,16 +338,8 @@ def stylize(image: np.ndarray, config: StampConfig | None = None) -> StampResult
     elif cfg.lines:
         mask = _outline_mask(img, (h, w), cfg) & ~_soft_sky_edges(img, small_sky, (h, w))
         ink, on = (hex_to_bgr(LIGHT_INK), "dark") if night else (hex_to_bgr(INK), "light")
-        lamps = _dusk_lamps(img, (h, w)) if cfg.night == "auto" and not night else None
-        # both overlays are decided on the fills before any ink is drawn
         overlay += lines_svg(flat, mask, ink, on)
-        if lamps is not None and lamps.any():
-            # dusk: the dark half of the scene (a river, a street) still shows its lights
-            overlay += lines_svg(flat, lamps, hex_to_bgr(LIGHT_INK), "dark")
-        lamp_fill = flat
         flat = draw_lines(flat, mask, ink, on)
-        if lamps is not None and lamps.any():
-            flat = np.where((lamps & (_fill_luma(lamp_fill) < LIGHT_FILL_LUMA))[..., None], np.array(hex_to_bgr(LIGHT_INK), np.uint8), flat)
     if cfg.shape == "rect":
         return StampResult(flat, shapes_to_svg(shapes, (h, w), overlay=overlay, base=base), labels, used)
 
@@ -401,18 +388,6 @@ def _soft_sky_edges(img: np.ndarray, sky: np.ndarray, size: tuple[int, int]) -> 
     bright = cv2.GaussianBlur(gray, (0, 0), 4.0) > CLOUD_MIN_LUMA  # clouds are light; a hazy ridge is not
     soft = cv2.resize(((grad < SOFT_EDGE_GRAD) & bright).astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
     return above & soft.astype(bool)
-
-
-def _dusk_lamps(img: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    """Day mode: small bright points whose surroundings are dark in the photo (lamps
-    over a dusk river or street), drawn as lamp dots."""
-    h, w = size
-    line_img = resize_long_side(img, LINE_SIZE)
-    spots = light_spots(line_img, (h, w), min_luma=DUSK_LAMP_LUMA, max_area=DUSK_LAMP_AREA)
-    gray = cv2.cvtColor(line_img, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    around = cv2.GaussianBlur(gray, (0, 0), DUSK_SURROUND_SIGMA * max(gray.shape) / LINE_SIZE)
-    dark = cv2.resize(around, (w, h), interpolation=cv2.INTER_LINEAR) < DUSK_DARK_LUMA
-    return spots & dark
 
 
 def _stretch_contrast(image: np.ndarray, low: float = 2, high: float = 98) -> np.ndarray:

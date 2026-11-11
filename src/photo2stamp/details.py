@@ -5,6 +5,11 @@ k-means can keep at the work size, so their colors are averaged into grey. They 
 found again on the finer LINE_SIZE copy of the photo: pixels whose color differs from
 the local average color (a/b distance) and that are colorful themselves. Each small
 connected spot is painted in its own natural-palette color.
+
+A stamp holds only a few such details. Grass, leaves and gravel also produce colored
+specks, many and small, so specks of a few pixels are dropped, spots whose color barely
+differs from the fill under them are dropped, and only the DETAIL_BUDGET largest and
+most contrasting spots are drawn.
 """
 
 from __future__ import annotations
@@ -18,9 +23,13 @@ from .segment import to_lab
 DETAIL_DIFF = 10.0  # a/b distance from the local average color that makes a pixel stand out
 DETAIL_CHROMA = 12.0  # ... and chroma it needs itself (a grey stone chip is not a detail)
 DETAIL_LOCAL_SIGMA = 8.0  # px at the detail resolution: size of the "local average" window
-DETAIL_MIN_AREA = 12  # px at the detail resolution: smaller spots are noise
+DETAIL_SPECK_AREA = 12  # px at the detail resolution: smaller specks are pixel noise
+DETAIL_MIN_AREA = 40  # px: specks between the two count as texture (grass, leaf glints), not detail
 DETAIL_MAX_AREA = 0.004  # fraction of the frame: larger patches belong to the regions
-DETAIL_MAX_SPOTS = 400  # more spots than this is texture (foliage, gravel), not detail
+DETAIL_MAX_SPOTS = 400  # more specks (>= DETAIL_SPECK_AREA) than this is texture (foliage, gravel)
+DETAIL_BUDGET = 60  # at most this many spots are drawn: the largest and most contrasting
+DETAIL_MIN_CONTRAST = 15.0  # Lab distance to the fill around a spot below which it is only noise
+DETAIL_RING = 0.003  # width of the ring around a spot where its fill is measured (fraction of the long side)
 
 
 def find_details(image: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
@@ -39,10 +48,13 @@ def find_details(image: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray, 
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
     count, comp, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     area = stats[:, cv2.CC_STAT_AREA]
-    keep = (area >= DETAIL_MIN_AREA) & (area <= DETAIL_MAX_AREA * mask.size)
-    keep[0] = False
+    small_enough = area <= DETAIL_MAX_AREA * mask.size
+    specks = (area >= DETAIL_SPECK_AREA) & small_enough
+    specks[0] = False
+    keep = specks & (area >= DETAIL_MIN_AREA)
     ids = np.flatnonzero(keep)
-    if len(ids) == 0 or len(ids) > DETAIL_MAX_SPOTS:
+    # texture is judged on all specks: a lawn makes hundreds, most of them tiny
+    if len(ids) == 0 or int(specks.sum()) > DETAIL_MAX_SPOTS:
         return np.zeros((h, w), np.int32), np.empty((0, 3), np.uint8)
     remap = np.zeros(count, np.int32)
     remap[ids] = np.arange(1, len(ids) + 1)
@@ -54,6 +66,49 @@ def find_details(image: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray, 
     means = means / counts
     big = cv2.resize(spots.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST).astype(np.int32)
     return big, detail_colors(means.astype(np.float32))
+
+
+def select_details(
+    spots: np.ndarray, colors: np.ndarray, flat: np.ndarray, budget: int = DETAIL_BUDGET
+) -> tuple[np.ndarray, np.ndarray]:
+    """Keep the spots that stand out from the fill around them, at most `budget` of them.
+
+    Each spot is scored by sqrt(area) x its Lab distance to the fill in a thin ring
+    around it, so large spots in a clearly different color win.
+    """
+    if budget < 0:
+        raise ValueError("budget must be >= 0")
+    n = len(colors)
+    if n == 0:
+        return spots, colors
+    h, w = spots.shape
+    ids = spots.ravel()
+    area = np.bincount(ids, minlength=n + 1)[1:]
+    # each spot's ring is its own dilation minus every spot pixel, measured per bounding
+    # box, so close spots do not steal each other's ring
+    r = max(2, int(round(DETAIL_RING * max(h, w))))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    lab = to_lab(flat[..., :3]).astype(np.float64)
+    any_spot = spots > 0
+    fill = np.zeros((n, 3))
+    has_ring = np.zeros(n, bool)
+    for k, box in enumerate(_label_boxes(spots, n)[1:]):
+        if box is None:
+            continue
+        y0, y1, x0, x1 = max(box[0] - r, 0), min(box[1] + r, h), max(box[2] - r, 0), min(box[3] + r, w)
+        own = (spots[y0:y1, x0:x1] == k + 1).astype(np.uint8)
+        ring = cv2.dilate(own, kernel).astype(bool) & ~any_spot[y0:y1, x0:x1]
+        if ring.any():
+            fill[k] = lab[y0:y1, x0:x1][ring].mean(axis=0)
+            has_ring[k] = True
+    contrast = np.linalg.norm(to_lab(colors[None])[0].astype(np.float64) - fill, axis=1)
+    # no ring: the spot sits inside other spots and its fill is unknown
+    score = np.where(has_ring & (contrast >= DETAIL_MIN_CONTRAST) & (area > 0), np.sqrt(area) * contrast, -1.0)
+    order = np.argsort(-score, kind="stable")[:budget]
+    keep = np.sort(order[score[order] > 0])
+    remap = np.zeros(n + 1, np.int32)
+    remap[keep + 1] = np.arange(1, len(keep) + 1)
+    return remap[spots], colors[keep]
 
 
 def paint_details(flat: np.ndarray, spots: np.ndarray, colors: np.ndarray) -> np.ndarray:
