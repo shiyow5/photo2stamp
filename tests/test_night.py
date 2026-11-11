@@ -62,3 +62,29 @@ def test_light_spots_marks_bright_points_only():
     spots = light_spots(img, size=(100, 100))
     assert spots[39:46, 39:46].any()
     assert not spots[50, 95] and not spots[10, 10]
+
+
+def test_dark_table_with_a_bright_dish_is_not_night():
+    # measured: ramen bowls on a black table, median luma 22 but one large bright bowl
+    import cv2
+
+    img = np.full((240, 320, 3), 20, np.uint8)
+    cv2.circle(img, (200, 140), 70, (150, 190, 220), -1)
+    assert not is_night(img)
+
+
+def test_lamp_dots_in_dark_parts_of_a_day_scene():
+    # dusk: bright sky, dark river with bright lamp reflections -> dots on the dark part
+    from photo2stamp.lines import _luma
+
+    rng = np.random.default_rng(0)
+    img = np.full((200, 300, 3), 35, np.uint8)
+    img[:90] = (200, 170, 150)  # bright evening sky (not night overall)
+    for x in range(20, 280, 40):
+        img[150:154, x : x + 4] = 250  # lamp reflections on the dark river
+    img = np.clip(img + rng.normal(0, 2, img.shape), 0, 255).astype(np.uint8)
+    assert not is_night(img)
+    out = stylize(img, StampConfig(max_size=0)).image
+    lamp = np.array(hex_to_bgr(LIGHT_INK), float)
+    river = out[120:190].astype(float)
+    assert (np.abs(river - lamp).sum(axis=2) < 30).sum() > 20

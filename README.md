@@ -7,6 +7,8 @@
 
 写真を平らな面に分けて色を少数の基準色にそろえ、その上に輪郭線を描きます。
 色は写真の色相(空は青、木は緑)を残すので、抽象化しても何が写っているか分かります。
+室内の照明による色かぶりは先に取り除くため、白い皿は白いままです。
+細かい色の模様(彫刻や花、料理の具)は小さな色の点として残します。
 夜景では輪郭線の代わりに、窓の灯りを点にして描くのが特徴です。
 円形や角丸を選ぶと、縁取りの付いたスタンプの形(透過PNG)で出力します。
 
@@ -30,6 +32,7 @@ SVG出力の例は[examples/photo_natural.svg](examples/photo_natural.svg)にあ
 |---|---|
 | [gallery.jpg](examples/gallery.jpg) | 枠なし(`--shape rect`) |
 | [gallery_circle_after.jpg](examples/gallery_circle_after.jpg) | 枠なしの絵をそのまま丸く切り抜く(`--shape circle --crop after`) |
+| [gallery_indoor.jpg](examples/gallery_indoor.jpg) | 料理・室内・動物・花の8枚(枠なし) |
 | [gallery_teal.jpg](examples/gallery_teal.jpg) | `teal`配色 |
 
 ## インストール
@@ -87,11 +90,13 @@ with open("stamp.svg", "w", encoding="utf-8") as f:
 | `--work-size` | 0(自動) | 色分けに使う画像の長辺(px)。小さいほど抽象的になる。0なら細部の量から500〜400pxを選ぶ |
 | `--max-size` | 800 | 出力の長辺(px)。0で元の大きさのまま |
 | `--no-lines` | なし | 輪郭線を描かない(色の面だけ) |
+| `--no-details` | なし | 細かい色の模様を点として残す処理を切る(`natural`のときだけ働く) |
+| `--no-white-balance` | なし | 照明の色かぶりを取り除かず、写真の色のまま使う |
 | `--line-width` | 1.5 | 輪郭線の太さ(600pxの画像に対するpx) |
 | `--line-threshold` | 0.012 | 線を引くのに必要なエッジの強さ。大きいほど線が減る |
 | `--line-min-length` | 0.07 | 長辺に対するこの割合より短い線を捨てる |
 | `--line-sigma` | 2.0 | 線を拾う大きさ。大きいほど大きな構造だけになる |
-| `--night` | `auto` | 夜モード(暗い面に灯りの点)。`auto`は写真の明るさで判定。`on`/`off`で強制 |
+| `--night` | `auto` | 夜モード(暗い面に灯りの点)。`auto`は写真の明るさと灯りの散らばり方で判定し、昼の描き方の写真でも暗い部分の灯りは点で描く。`on`/`off`で強制(`off`では灯りの点を描かない) |
 | `--smoother` | `l0` | 面を平らにする方法。`l0`(L0勾配最小化)か`meanshift` |
 | `--l0-lambda` | 0.04 | L0平滑化の強さ。大きいほど面が平らになる |
 | `--smooth` | 1 | `--smoother meanshift`のときの平滑化の回数 |
@@ -110,16 +115,18 @@ with open("stamp.svg", "w", encoding="utf-8") as f:
 
 | 段階 | 処理 | モジュール |
 |---|---|---|
-| 1 | 円形・角丸のときは正方形に切り抜く。位置はエッジの最も多い範囲(主役の被写体)に合わせる(`--crop after`では最後に切り抜く) | `pipeline.square_window` |
-| 2 | 長辺を800pxに縮め、細部の量(エッジ密度)から作業用の大きさ(500〜400px)を決める | `pipeline.auto_work_size` |
-| 3 | L0勾配最小化で、重要な輪郭を残したまま面を平らにする | `pipeline._smooth` |
-| 4 | Lab色空間のk-meansで8色に分ける。色み(a, b)を明るさの2倍に重み付けし、同じ明るさの緑の木と灰色の道を別の色にする | `segment.quantize` |
-| 5 | 彩度の高い小領域(看板や照明)を拾い、上端に接するなめらかな領域を空とする | `segment.extract_accents` / `extract_sky` |
-| 6 | 色を決める。`natural`では色相を8方向に、明るさを一定の段差にそろえ、彩度は写真の彩度に比例させる。うっすらした色味は光の色とみなして灰色に残す | `palette.natural_colors` |
-| 7 | 小さな領域を隣に吸収させ、ラベルを元の大きさになめらかに拡大し、多角形にする | `segment.merge_small_regions` / `upscale_labels` / `vectorize.labels_to_shapes` |
-| 8 | 輪郭線を描く。600pxの写真にDoG(ガウシアン差分)をかけ、短い線を捨てて太さをそろえる。暗い面の上には描かない | `lines.dog_lines` / `clean_lines` |
-| 9 | 夜景(明るさの中央値が45未満)では面を暗く保ち、輪郭線の代わりに窓の灯りを灯り色の点で描く | `pipeline.is_night` / `lines.light_spots` |
-| 10 | PNGとSVGに書き出す。円形・角丸のときは外周にリングと紙色のすき間を描く | `vectorize.render_png` / `frame_stamp` / `shapes_to_svg` |
+| 1 | 照明の色かぶりを取り除く。彩度の低い画素を「光に染まった灰色の物」とみなして光の色を推定する。上半分の青みは空とみなして使わず、上端が明るい暖色(夕焼け)のときは補正しない | `whitebalance.white_balance` |
+| 2 | 円形・角丸のときは正方形に切り抜く。位置はエッジの量と色の目立ち度が最も大きい範囲(主役の被写体)に合わせる(`--crop after`では最後に切り抜く) | `pipeline.square_window` |
+| 3 | 長辺を800pxに縮め、細部の量(エッジ密度)から作業用の大きさ(500〜400px)を決める | `pipeline.auto_work_size` |
+| 4 | L0勾配最小化で、重要な輪郭を残したまま面を平らにする | `pipeline._smooth` |
+| 5 | Lab色空間のk-meansで8色に分ける。色み(a, b)を明るさの2倍に重み付けし、同じ明るさの緑の木と灰色の道を別の色にする | `segment.quantize` |
+| 6 | 彩度の高い小領域(看板や照明、ご飯の上の赤ピーマン)を色相ごとに拾い、上端に接するなめらかな領域を空とする | `segment.extract_accents` / `extract_sky` |
+| 7 | 色を決める。`natural`では色相を8方向に、明るさを一定の段差にそろえ、彩度は写真の彩度に比例させる。うっすらした色味は光の色とみなして灰色に残す。葉に囲まれた暗い面(日陰の葉)は暗い緑にする | `palette.natural_colors` / `segment.tint_shaded_foliage` |
+| 8 | 小さな領域を隣に吸収させ、ラベルを元の大きさになめらかに拡大し、多角形にする | `segment.merge_small_regions` / `upscale_labels` / `vectorize.labels_to_shapes` |
+| 9 | 細かい色の模様を、600pxの写真で周りと色が違う小さな点として拾い、その色で塗る | `details.find_details` |
+| 10 | 輪郭線を描く。600pxの写真にDoG(ガウシアン差分)をかけ、短い線を捨てて太さをそろえる。暗い面の上と、昼の空の雲の縁(なだらかな境目)には描かない | `lines.dog_lines` / `pipeline._soft_sky_edges` |
+| 11 | 夜景(暗く、明るい部分が小さく散らばっている写真)では面を暗く保ち、輪郭線の代わりに窓の灯りを灯り色の点で描く。昼の描き方でも、暗い部分にある小さな灯りは点で描く | `pipeline.is_night` / `lines.light_spots` |
+| 12 | PNGとSVGに書き出す。SVGは輪郭どおりの下地の上に滑らかな多角形を重ね、すき間に背景色が出ないようにする。円形・角丸のときは外周にリングと紙色のすき間を描く | `vectorize.render_png` / `frame_stamp` / `shapes_to_svg` |
 
 それぞれの設定値を選んだ理由、試してやめた方法、参考にした研究は[docs/development-notes.md](docs/development-notes.md)にまとめています。
 設定を変える前に読んでください。
@@ -127,14 +134,13 @@ with open("stamp.svg", "w", encoding="utf-8") as f:
 ## 制約
 
 - 固定配色(`teal`など)は色を明るさの順に割り当てるので、青空が白、木が黄色のように物の色が入れ替わります。被写体を見せたいときは`natural`を使ってください
-- 日陰の葉は写真では暗く青みがかっているため、緑ではなく暗い灰色で塗られます
-- 多色の模様(寺院の彫刻など)は、色が平均されて灰色や青の面になります
-- 夜モードの判定は写真全体の明るさだけで行います。夕景のように半分だけ暗い写真は昼の描き方になります
-- 正方形の切り抜き位置は「エッジが最も多い範囲」で決めます。細部の多いものが主役でない写真では、主役が外れることがあります
-- 空は「上端に接していて、なめらか」という条件で判定します。上端に接する無地の壁も空と判定されることがあります
-- 雲の縁も輪郭線として描かれます
-- SVGは多角形を重ねて描くので、隣り合う図形のすき間に下の図形の色が細く見えることがあります
-
+- 色かぶりの補正は、画面の上半分の青みを空とみなして使いません。上の方にある日陰の壁は青いまま残ります
+- 上端が明るい暖色の写真は夕焼けとみなし、暖色の照明を補正しません
+- 日陰の葉が暗い緑になるのは、周りを葉に囲まれているときだけです。空を背にした日陰の葉は暗い灰色になります
+- 細かい色の模様は点として残しますが、600pxの写真で数ピクセルより小さい模様は平均されて消えます。草むらのような細かい模様の多い写真では、点が多く出てにぎやかになります
+- 空は「上端に接していて、なめらかで、画面の下端までは届かない」という条件で判定します。上端に接する無地の壁も空と判定されることがあります
+- SVGとPNGは、境目のアンチエイリアスの違いで1ピクセルほど食い違います
+- 夜の判定は「明るい部分が小さく散らばっている」ことを条件にしています。照らされた大きな建物や月が大きく写った夜景は、昼の描き方になります
 ## 開発
 
 ```bash
@@ -166,6 +172,14 @@ uv run python scripts/gallery.py -o examples/gallery_circle.jpg --shape circle \
 | bridge.jpg | Pierre Blaché | [Bir-Hakeim bridge, Paris](https://commons.wikimedia.org/wiki/File:Bir-Hakeim_bridge,_Paris_24_June_2021.jpg) |
 | street.jpg | Omina006 | [Street city](https://commons.wikimedia.org/wiki/File:Street_city.jpg) |
 | temple.jpg | Anonymous0006 | [Thillai Nataraja Temple](https://commons.wikimedia.org/wiki/File:Thillai_Nataraja_Temple_(Chidambaram_Nataraja_Temple).jpg) |
+| paella.jpg | Wilfredor | [Paella de fruit de mer](https://commons.wikimedia.org/wiki/File:Paella_de_fruit_de_mer.jpg) |
+| steak.jpg | Syced | [Dish at Italian restaurant in Tokyo](https://commons.wikimedia.org/wiki/File:Dish_at_Italian_restaurant_in_Tokyo.jpg) |
+| ramen.jpg | Andy Li | [Soy Milk Ramen and Tonkotsu Miso Ramen by Goemon Ramen Bar](https://commons.wikimedia.org/wiki/File:Soy_Milk_Ramen_and_Tonkotsu_Miso_Ramen_by_Goemon_Ramen_Bar.jpg) |
+| sushi.jpg | Mojmir Churavy | [Sushi Plate in Organic Sushi Prague 4](https://commons.wikimedia.org/wiki/File:Sushi_Plate_in_Organic_Sushi_Prague_4.jpg) |
+| cafe.jpg | Andy Li | [Interior of 1UP Cafe 2024-02-18](https://commons.wikimedia.org/wiki/File:Interior_of_1UP_Cafe_2024-02-18.jpg) |
+| cat.jpg | TheOmniCommie | [Orange tabby persian cat sleeping on a couch](https://commons.wikimedia.org/wiki/File:Orange_tabby_persian_cat_sleeping_on_a_couch.png) |
+| tulip.jpg | Alabama Extension | [Close up of red-yellow tulip in bloom](https://commons.wikimedia.org/wiki/File:Close_up_of_red-yellow_tulip_in_bloom.jpg) |
+| autumn.jpg | Martin Vorel | [Autumn Forest Wet Bark](https://commons.wikimedia.org/wiki/File:Autumn_Forest_Wet_Bark.jpg) |
 
 ## ライセンス
 

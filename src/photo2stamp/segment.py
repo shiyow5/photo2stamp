@@ -138,6 +138,27 @@ def merge_small_regions(
     return labels[rows, cols]
 
 
+ACCENT_HUE_SPLIT = 15.0  # circular hue spread (deg) above which a vivid patch holds several hues
+ACCENT_MAX_AREA = 0.12  # a vivid patch larger than this fraction is a main region, not an accent
+
+
+def _hue_spread(ab: np.ndarray) -> float:
+    """Circular standard deviation (deg) of the hues of (N,2) a/b values."""
+    ang = np.arctan2(ab[:, 1], ab[:, 0])
+    r = float(np.hypot(np.cos(ang).mean(), np.sin(ang).mean()))
+    return float(np.degrees(np.sqrt(-2.0 * np.log(max(r, 1e-9)))))
+
+
+def _split_by_hue(ab: np.ndarray, seed: int = 0) -> np.ndarray:
+    """Two hue groups (0/1) of (N,2) a/b values, by k-means on the hue direction."""
+    ang = np.arctan2(ab[:, 1], ab[:, 0])
+    pts = np.stack([np.cos(ang), np.sin(ang)], axis=1).astype(np.float32)
+    cv2.setRNGSeed(seed)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01)
+    _, groups, _ = cv2.kmeans(pts, 2, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+    return groups.ravel()
+
+
 def extract_accents(
     lab: np.ndarray,
     labels: np.ndarray,
@@ -145,27 +166,51 @@ def extract_accents(
     chroma: float,
     min_area: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Give small but vivid regions (signs, lights) their own cluster.
+    """Give small but vivid regions (signs, lights, peppers on rice) their own cluster.
 
-    K-means tends to swallow small saturated patches into a large neutral cluster.
-    Every connected patch with chroma >= `chroma` and area >= `min_area` becomes a new
-    label whose center is the patch's mean Lab color. Returns new arrays.
+    K-means tends to swallow small saturated patches into a large cluster. Vivid pixels
+    (chroma >= `chroma`) are joined into patches (small gaps such as the text on a sign
+    are closed). A patch whose hues spread widely (red strips lying on yellow rice) is
+    split into two hue groups, so the colors are not averaged into mustard; a patch of
+    one hue stays whole even when its hue drifts. Every resulting piece with area in
+    [`min_area`, ACCENT_MAX_AREA of the frame] becomes a new label with the piece's mean
+    Lab color; larger vivid areas are left to k-means. Returns new arrays.
     """
-    vivid = (np.hypot(lab[..., 1], lab[..., 2]) >= chroma).astype(np.uint8)
-    vivid = cv2.morphologyEx(vivid, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    c = np.hypot(lab[..., 1], lab[..., 2])
+    vivid_raw = c >= chroma
+    vivid = cv2.morphologyEx(vivid_raw.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     # close gaps left by text and frames so a sign becomes one solid patch
-    vivid = cv2.morphologyEx(vivid, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-    count, comp, stats, _ = cv2.connectedComponentsWithStats(vivid, connectivity=8)
+    closed = cv2.morphologyEx(vivid, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    count, comp, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
+    max_area = ACCENT_MAX_AREA * labels.size
     new_labels = labels.copy()
     extra: list[np.ndarray] = []
+
+    def add(piece: np.ndarray, y: int, x: int) -> None:
+        area = int(piece.sum())
+        if area < max(1, min_area) or area > max_area:
+            return
+        window = new_labels[y : y + piece.shape[0], x : x + piece.shape[1]]
+        window[piece] = centers.shape[0] + len(extra)
+        extra.append(lab[y : y + piece.shape[0], x : x + piece.shape[1]][piece].mean(axis=0))
+
     for i in range(1, count):
-        if stats[i, cv2.CC_STAT_AREA] < max(1, min_area):
+        x, y, w, h, area = stats[i]
+        if area < max(1, min_area) or y == 0:  # vivid patches at the top edge are sky, not signs
             continue
-        if stats[i, cv2.CC_STAT_TOP] == 0:  # vivid patches at the top edge are sky, not signs
+        sub = comp[y : y + h, x : x + w] == i
+        core = sub & vivid_raw[y : y + h, x : x + w]
+        ab = lab[y : y + h, x : x + w][core][:, 1:]
+        if len(ab) < 2 or _hue_spread(ab) <= ACCENT_HUE_SPLIT:
+            add(sub, y, x)
             continue
-        mask = comp == i
-        new_labels[mask] = centers.shape[0] + len(extra)
-        extra.append(lab[mask].mean(axis=0))
+        groups = _split_by_hue(ab)
+        for g in (0, 1):
+            mask = np.zeros_like(core)
+            mask[core] = groups == g
+            n, parts = cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)
+            for k in range(1, n):
+                add(parts == k, y, x)
     if not extra:
         return new_labels, centers.copy()
     return new_labels, np.vstack([centers, np.array(extra, np.float32)]).astype(np.float32)
@@ -219,6 +264,9 @@ def extract_far(
     return new_labels, new_centers, far_label
 
 
+SKY_MAX_BOTTOM = 0.9  # sky never reaches the bottom of the frame (a plain backdrop does)
+
+
 def extract_sky(
     labels: np.ndarray,
     centers: np.ndarray,
@@ -252,6 +300,7 @@ def extract_sky(
             i
             for i in top_ids
             if stats[i, cv2.CC_STAT_AREA] >= min_fraction * h * w
+            and stats[i, cv2.CC_STAT_TOP] + stats[i, cv2.CC_STAT_HEIGHT] <= SKY_MAX_BOTTOM * h
             and (texture is None or float(texture[comp == i].mean()) <= max_texture)
         ]
         if keep:
@@ -281,3 +330,52 @@ def _split_off_sky_outliers(
         return labels, centers
     new_labels = np.where(off, centers.shape[0], labels).astype(np.int32)
     return new_labels, np.vstack([centers, lab[off].mean(axis=0, keepdims=True)]).astype(np.float32)
+
+
+SHADE_MAX_L = 35.0  # clusters darker than this may be foliage in shade
+SHADE_MAX_CHROMA = 15.0  # ... when nearly colorless in the photo (their tint is skylight)
+FOLIAGE_HUES = (100.0, 170.0)  # Lab hues of leaves
+FOLIAGE_MIN_CHROMA = 12.0
+SHADE_GREEN_SHARE = 0.5  # share of a cluster's border that must be leaves
+SHADE_TINT = 0.6  # the shade takes this fraction of its leafy neighbours' a/b
+
+
+def tint_shaded_foliage(labels: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    """Return centers where dark, nearly grey clusters surrounded by leaves take a darker
+    version of the leaves' hue. Leaves in shade are lit by the blue sky and measure dark
+    blue-grey, so a canopy turns into grey and blue blobs; a person sees dark green."""
+    out = centers.copy()
+    chroma = np.hypot(centers[:, 1], centers[:, 2])
+    hue = np.degrees(np.arctan2(centers[:, 2], centers[:, 1])) % 360
+    leafy = (hue >= FOLIAGE_HUES[0]) & (hue <= FOLIAGE_HUES[1]) & (chroma >= FOLIAGE_MIN_CHROMA)
+    if not leafy.any():
+        return out
+    cand = np.flatnonzero((centers[:, 0] < SHADE_MAX_L) & (chroma < SHADE_MAX_CHROMA))
+    if len(cand) == 0:
+        return out
+    # k-means often splits one shaded patch into several near-identical dark clusters, so
+    # the candidates are judged together: each connected shaded area by its own border
+    union = np.isin(labels, cand).astype(np.uint8)
+    count, comp, stats, _ = cv2.connectedComponentsWithStats(union, connectivity=8)
+    kernel = np.ones((5, 5), np.uint8)
+    shaded = np.zeros(labels.shape, bool)
+    green_ab = []
+    H, W = labels.shape
+    for k in range(1, count):
+        x, y, w, h, _ = stats[k]
+        y0, x0, y1, x1 = max(0, y - 2), max(0, x - 2), min(H, y + h + 2), min(W, x + w + 2)
+        mask = (comp[y0:y1, x0:x1] == k).astype(np.uint8)
+        neigh = labels[y0:y1, x0:x1][(cv2.dilate(mask, kernel) > 0) & (mask == 0)]
+        if neigh.size and leafy[neigh].mean() >= SHADE_GREEN_SHARE:
+            shaded[y0:y1, x0:x1] |= mask.astype(bool)
+            green_ab.append(centers[neigh[leafy[neigh]], 1:].mean(axis=0))
+    if not green_ab:
+        return out
+    tint = SHADE_TINT * np.mean(green_ab, axis=0)
+    n = centers.shape[0]
+    total = np.bincount(labels.ravel(), minlength=n)
+    inside = np.bincount(labels.ravel(), weights=shaded.ravel(), minlength=n)
+    for i in cand:
+        if total[i] and inside[i] / total[i] >= 0.5:
+            out[i, 1:] = tint
+    return out
