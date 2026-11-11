@@ -115,21 +115,24 @@ def majority_filter(labels: np.ndarray, n_labels: int, size: int = 7, iterations
 
 
 def merge_small_regions(
-    labels: np.ndarray, min_area: int, keep: frozenset[int] = frozenset()
+    labels: np.ndarray, min_area: int, protect: np.ndarray | None = None
 ) -> np.ndarray:
     """Absorb connected regions smaller than min_area into their nearest large neighbour.
 
-    Labels in `keep` (e.g. accent colors such as signs) are never absorbed.
+    A small region lying mostly on `protect` (bool mask, e.g. the accent pieces such as
+    signs) is kept. Protection is per region, not per label: an accent often shares its
+    palette color with a large region, whose crumbs are still merged.
     """
     if min_area <= 1:
         return labels.copy()
     small = np.zeros(labels.shape, bool)
     for lab in np.unique(labels):
-        if int(lab) in keep:
-            continue
         mask = (labels == lab).astype(np.uint8)
         count, comp, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4)
         tiny = np.flatnonzero(stats[1:, cv2.CC_STAT_AREA] < min_area) + 1
+        if tiny.size and protect is not None:
+            covered = np.bincount(comp.ravel(), weights=protect.ravel(), minlength=count)
+            tiny = tiny[covered[tiny] < 0.5 * stats[tiny, cv2.CC_STAT_AREA]]
         if tiny.size:
             small |= np.isin(comp, tiny)
     if not small.any() or small.all():

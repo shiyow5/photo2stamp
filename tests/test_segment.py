@@ -102,7 +102,7 @@ def test_merge_small_regions_keeps_protected_labels():
     labels = np.zeros((40, 40), np.int32)
     labels[5:7, 5:7] = 2  # tiny accent
     labels[20:22, 20:22] = 3  # tiny non-accent
-    out = merge_small_regions(labels, min_area=10, keep=frozenset({2}))
+    out = merge_small_regions(labels, min_area=10, protect=labels == 2)
     assert out[5, 5] == 2
     assert out[20, 20] == 0
 
@@ -304,3 +304,18 @@ def test_an_object_across_a_hue_boundary_stays_one_accent():
     labels = np.zeros((100, 100), np.int32)
     _, centers = extract_accents(to_lab(bgr), labels, np.array([[50, 0, 0]], np.float32), 25, 20)
     assert centers.shape[0] == 2
+
+
+def test_protected_pieces_survive_but_same_label_crumbs_merge():
+    # an accent can share its palette color (label) with a large region; only the accent
+    # piece itself is protected, not every crumb of that label
+    labels = np.zeros((60, 60), np.int32)
+    labels[:, 30:] = 2  # a large region of label 2
+    labels[10:13, 5:8] = 2  # the accent piece (9 px) inside region 0
+    labels[40:42, 10:12] = 2  # a crumb of label 2 (4 px)
+    protect = np.zeros((60, 60), bool)
+    protect[10:13, 5:8] = True
+    out = merge_small_regions(labels, min_area=10, protect=protect)
+    assert (out[10:13, 5:8] == 2).all()
+    assert (out[40:42, 10:12] == 0).all()
+    assert (out[:, 30:] == 2).all()
