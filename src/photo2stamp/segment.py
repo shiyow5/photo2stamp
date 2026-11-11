@@ -123,6 +123,8 @@ def merge_small_regions(
     signs) is kept. Protection is per region, not per label: an accent often shares its
     palette color with a large region, whose crumbs are still merged.
     """
+    if protect is not None and protect.shape != labels.shape:
+        raise ValueError(f"protect has shape {protect.shape}, labels {labels.shape}")
     if min_area <= 1:
         return labels.copy()
     small = np.zeros(labels.shape, bool)

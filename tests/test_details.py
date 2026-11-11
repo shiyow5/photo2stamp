@@ -115,3 +115,42 @@ def test_a_field_of_specks_gets_no_details_at_all():
     a = stylize(img, StampConfig(max_size=0, lines=False)).image
     b = stylize(img, StampConfig(max_size=0, lines=False, details=False)).image
     assert np.mean(np.any(a != b, axis=2)) < 0.002
+
+
+def test_a_spot_enclosed_by_another_is_judged_by_the_fill_not_by_black():
+    # its ring lies on the other spot: no fill around it is known, so it is not drawn
+    from photo2stamp.details import select_details
+
+    flat = np.full((60, 60, 3), (60, 140, 90), np.uint8)
+    spots = np.zeros((60, 60), np.int32)
+    spots[20:40, 20:40] = 2  # a red spot ...
+    spots[28:32, 28:32] = 1  # ... enclosing a spot of the fill's own green
+    colors = np.array([(62, 138, 92), (50, 60, 200)], np.uint8)
+    kept, kept_colors = select_details(spots, colors, flat)
+    assert [tuple(c) for c in kept_colors] == [(50, 60, 200)]
+
+
+def test_neighbouring_spots_each_keep_their_ring():
+    from photo2stamp.details import select_details
+
+    flat = np.full((40, 60, 3), 150, np.uint8)
+    spots = np.zeros((40, 60), np.int32)
+    spots[10:30, 10:29] = 1
+    spots[10:30, 30:50] = 2  # 1 px apart
+    colors = np.array([(50, 60, 200), (60, 160, 60)], np.uint8)
+    _, kept_colors = select_details(spots, colors, flat)
+    assert len(kept_colors) == 2
+
+
+def test_select_details_handles_empty_input_and_bad_budgets():
+    import pytest
+
+    from photo2stamp.details import select_details
+
+    flat = np.full((10, 10, 3), 150, np.uint8)
+    spots = np.zeros((10, 10), np.int32)
+    out, cols = select_details(spots, np.empty((0, 3), np.uint8), flat)
+    assert len(cols) == 0 and not out.any()
+    spots[2:6, 2:6] = 1
+    with pytest.raises(ValueError):
+        select_details(spots, np.array([(50, 60, 200)], np.uint8), flat, budget=-1)

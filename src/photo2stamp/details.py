@@ -26,9 +26,10 @@ DETAIL_LOCAL_SIGMA = 8.0  # px at the detail resolution: size of the "local aver
 DETAIL_SPECK_AREA = 12  # px at the detail resolution: smaller specks are pixel noise
 DETAIL_MIN_AREA = 40  # px: specks between the two count as texture (grass, leaf glints), not detail
 DETAIL_MAX_AREA = 0.004  # fraction of the frame: larger patches belong to the regions
-DETAIL_MAX_SPOTS = 400  # more spots than this is texture (foliage, gravel), not detail
+DETAIL_MAX_SPOTS = 400  # more specks (>= DETAIL_SPECK_AREA) than this is texture (foliage, gravel)
 DETAIL_BUDGET = 60  # at most this many spots are drawn: the largest and most contrasting
 DETAIL_MIN_CONTRAST = 15.0  # Lab distance to the fill around a spot below which it is only noise
+DETAIL_RING = 0.003  # width of the ring around a spot where its fill is measured (fraction of the long side)
 
 
 def find_details(image: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
@@ -75,19 +76,34 @@ def select_details(
     Each spot is scored by sqrt(area) x its Lab distance to the fill in a thin ring
     around it, so large spots in a clearly different color win.
     """
+    if budget < 0:
+        raise ValueError("budget must be >= 0")
     n = len(colors)
     if n == 0:
         return spots, colors
+    h, w = spots.shape
     ids = spots.ravel()
     area = np.bincount(ids, minlength=n + 1)[1:]
-    ring = cv2.dilate(spots.astype(np.float32), np.ones((5, 5), np.uint8)).astype(np.int32)
-    ring[spots > 0] = 0
-    ring_ids = ring.ravel()
-    ring_count = np.maximum(np.bincount(ring_ids, minlength=n + 1)[1:], 1)
-    lab = to_lab(flat[..., :3]).reshape(-1, 3).astype(np.float64)
-    fill = np.stack([np.bincount(ring_ids, weights=lab[:, c], minlength=n + 1)[1:] for c in range(3)], axis=1)
-    contrast = np.linalg.norm(to_lab(colors[None])[0].astype(np.float64) - fill / ring_count[:, None], axis=1)
-    score = np.where((contrast >= DETAIL_MIN_CONTRAST) & (area > 0), np.sqrt(area) * contrast, -1.0)
+    # each spot's ring is its own dilation minus every spot pixel, measured per bounding
+    # box, so close spots do not steal each other's ring
+    r = max(2, int(round(DETAIL_RING * max(h, w))))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    lab = to_lab(flat[..., :3]).astype(np.float64)
+    any_spot = spots > 0
+    fill = np.zeros((n, 3))
+    has_ring = np.zeros(n, bool)
+    for k, box in enumerate(_label_boxes(spots, n)[1:]):
+        if box is None:
+            continue
+        y0, y1, x0, x1 = max(box[0] - r, 0), min(box[1] + r, h), max(box[2] - r, 0), min(box[3] + r, w)
+        own = (spots[y0:y1, x0:x1] == k + 1).astype(np.uint8)
+        ring = cv2.dilate(own, kernel).astype(bool) & ~any_spot[y0:y1, x0:x1]
+        if ring.any():
+            fill[k] = lab[y0:y1, x0:x1][ring].mean(axis=0)
+            has_ring[k] = True
+    contrast = np.linalg.norm(to_lab(colors[None])[0].astype(np.float64) - fill, axis=1)
+    # no ring: the spot sits inside other spots and its fill is unknown
+    score = np.where(has_ring & (contrast >= DETAIL_MIN_CONTRAST) & (area > 0), np.sqrt(area) * contrast, -1.0)
     order = np.argsort(-score, kind="stable")[:budget]
     keep = np.sort(order[score[order] > 0])
     remap = np.zeros(n + 1, np.int32)

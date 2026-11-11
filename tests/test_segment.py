@@ -319,3 +319,22 @@ def test_protected_pieces_survive_but_same_label_crumbs_merge():
     assert (out[10:13, 5:8] == 2).all()
     assert (out[40:42, 10:12] == 0).all()
     assert (out[:, 30:] == 2).all()
+
+
+def test_a_piece_needs_half_of_it_protected():
+    labels = np.zeros((40, 40), np.int32)
+    labels[5:7, 5:10] = 3  # 10 px, 4 protected
+    labels[25:27, 5:10] = 3  # 10 px, 6 protected
+    protect = np.zeros((40, 40), bool)
+    protect[5:7, 5:7] = True
+    protect[25:27, 5:8] = True
+    out = merge_small_regions(labels, min_area=12, protect=protect)
+    assert (out[5:7, 5:10] == 0).all()
+    assert (out[25:27, 5:10] == 3).all()
+
+
+def test_protect_must_match_the_label_map():
+    import pytest
+
+    with pytest.raises(ValueError):
+        merge_small_regions(np.zeros((10, 10), np.int32), 5, protect=np.zeros((5, 5), bool))

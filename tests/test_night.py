@@ -107,3 +107,26 @@ def test_dense_windows_become_spaced_dots():
     d = np.hypot(*(pts[:, None] - pts[None]).transpose(2, 0, 1))
     np.fill_diagonal(d, np.inf)
     assert d.min() >= LIGHT_GAP * 400 - 1
+
+
+def test_the_larger_light_wins_a_crowded_spot():
+    from photo2stamp.lines import light_spots
+
+    img = np.full((200, 200, 3), 10, np.uint8)
+    img[100:102, 100:102] = 240  # small lamp
+    img[100:108, 104:112] = 240  # big lit window right next to it
+    spots = light_spots(img, size=(200, 200), gap=0.05)  # 10 px: the two are too close
+    ys, xs = np.nonzero(spots)
+    assert abs(xs.mean() - 107.5) < 2  # the dot sits on the big window
+
+
+def test_gap_zero_keeps_every_light():
+    import cv2
+
+    from photo2stamp.lines import light_spots
+
+    img = np.full((200, 200, 3), 10, np.uint8)
+    for x in range(20, 180, 8):
+        img[100:102, x : x + 2] = 240
+    spots = light_spots(img, size=(200, 200), dot=0.001, gap=0.0)
+    assert cv2.connectedComponents(spots.astype(np.uint8))[0] - 1 == 20
